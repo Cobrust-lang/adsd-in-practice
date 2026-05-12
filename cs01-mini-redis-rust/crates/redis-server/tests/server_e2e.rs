@@ -36,17 +36,13 @@ async fn spawn_server() -> (u16, JoinHandle<std::io::Result<()>>) {
 }
 
 /// Spawn a server with a caller-specified `max_frame_size` (M1.4 tests).
-async fn spawn_server_with_limit(
-    max_frame_size: usize,
-) -> (u16, JoinHandle<std::io::Result<()>>) {
+async fn spawn_server_with_limit(max_frame_size: usize) -> (u16, JoinHandle<std::io::Result<()>>) {
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind 127.0.0.1:0");
     let port = listener.local_addr().expect("local_addr").port();
     let store = Store::new();
-    let handle = tokio::spawn(async move {
-        server::run_on(listener, store, max_frame_size).await
-    });
+    let handle = tokio::spawn(async move { server::run_on(listener, store, max_frame_size).await });
     (port, handle)
 }
 
@@ -361,5 +357,188 @@ async fn multiple_sequential_clients() {
         let pong = read_exact_n(&mut sock, b"+PONG\r\n".len()).await;
         assert_eq!(pong, b"+PONG\r\n");
     }
+    srv.abort();
+}
+
+// ── M1.4 (ADR-0006) ──────────────────────────────────────────────────────────
+
+/// PING with a message must echo the message as a bulk string.
+#[tokio::test]
+async fn ping_with_message_returns_bulk_string() {
+    let (port, srv) = spawn_server().await;
+    let mut sock = connect(port).await;
+    sock.write_all(b"*2\r\n$4\r\nPING\r\n$5\r\nhello\r\n")
+        .await
+        .expect("write PING hello");
+    let want = b"$5\r\nhello\r\n";
+    let got = read_exact_n(&mut sock, want.len()).await;
+    assert_eq!(got, want);
+    srv.abort();
+}
+
+/// EXPIRE on an existing key → :1, then TTL returns ~100.
+#[tokio::test]
+async fn expire_and_ttl_round_trip() {
+    let (port, srv) = spawn_server().await;
+    let mut sock = connect(port).await;
+    sock.write_all(b"*3\r\n$3\r\nSET\r\n$1\r\nk\r\n$1\r\nv\r\n")
+        .await
+        .expect("set");
+    let _ = read_exact_n(&mut sock, b"+OK\r\n".len()).await;
+
+    sock.write_all(b"*3\r\n$6\r\nEXPIRE\r\n$1\r\nk\r\n$3\r\n100\r\n")
+        .await
+        .expect("expire");
+    let reply = read_exact_n(&mut sock, b":1\r\n".len()).await;
+    assert_eq!(reply, b":1\r\n");
+
+    sock.write_all(b"*2\r\n$3\r\nTTL\r\n$1\r\nk\r\n")
+        .await
+        .expect("ttl");
+    // TTL response is ":<n>\r\n"; we only check the prefix and CRLF.
+    let mut buf = [0u8; 8];
+    let n = sock.read(&mut buf).await.expect("read ttl");
+    let s = String::from_utf8_lossy(&buf[..n]);
+    assert!(s.starts_with(':'), "TTL must start with ':', got {s:?}");
+    assert!(s.ends_with("\r\n"), "TTL must end with CRLF, got {s:?}");
+    // Strip ':' and CRLF, parse.
+    let n: i64 = s
+        .trim_start_matches(':')
+        .trim_end_matches("\r\n")
+        .parse()
+        .expect("integer body");
+    assert!((99..=100).contains(&n), "expected TTL near 100, got {n}");
+    srv.abort();
+}
+
+/// EXPIRE on missing key returns :0; PERSIST/TTL/TYPE on missing return
+/// their respective sentinel replies.
+#[tokio::test]
+async fn expire_persist_on_missing_returns_zero() {
+    let (port, srv) = spawn_server().await;
+    let mut sock = connect(port).await;
+    sock.write_all(b"*3\r\n$6\r\nEXPIRE\r\n$4\r\nnope\r\n$2\r\n60\r\n")
+        .await
+        .expect("expire missing");
+    let r = read_exact_n(&mut sock, b":0\r\n".len()).await;
+    assert_eq!(r, b":0\r\n");
+
+    sock.write_all(b"*2\r\n$7\r\nPERSIST\r\n$4\r\nnope\r\n")
+        .await
+        .expect("persist missing");
+    let r2 = read_exact_n(&mut sock, b":0\r\n".len()).await;
+    assert_eq!(r2, b":0\r\n");
+
+    sock.write_all(b"*2\r\n$3\r\nTTL\r\n$4\r\nnope\r\n")
+        .await
+        .expect("ttl missing");
+    let r3 = read_exact_n(&mut sock, b":-2\r\n".len()).await;
+    assert_eq!(r3, b":-2\r\n");
+    srv.abort();
+}
+
+/// TYPE existing string → +string, missing → +none.
+#[tokio::test]
+async fn type_round_trip() {
+    let (port, srv) = spawn_server().await;
+    let mut sock = connect(port).await;
+    sock.write_all(b"*3\r\n$3\r\nSET\r\n$1\r\nk\r\n$1\r\nv\r\n")
+        .await
+        .expect("set");
+    let _ = read_exact_n(&mut sock, b"+OK\r\n".len()).await;
+
+    sock.write_all(b"*2\r\n$4\r\nTYPE\r\n$1\r\nk\r\n")
+        .await
+        .expect("type k");
+    let got = read_exact_n(&mut sock, b"+string\r\n".len()).await;
+    assert_eq!(got, b"+string\r\n");
+
+    sock.write_all(b"*2\r\n$4\r\nTYPE\r\n$4\r\nnope\r\n")
+        .await
+        .expect("type nope");
+    let got2 = read_exact_n(&mut sock, b"+none\r\n".len()).await;
+    assert_eq!(got2, b"+none\r\n");
+    srv.abort();
+}
+
+/// KEYS * returns an array containing all live keys.
+#[tokio::test]
+async fn keys_star_returns_all_live() {
+    let (port, srv) = spawn_server().await;
+    let mut sock = connect(port).await;
+    sock.write_all(b"*3\r\n$3\r\nSET\r\n$1\r\na\r\n$1\r\n1\r\n")
+        .await
+        .expect("set a");
+    let _ = read_exact_n(&mut sock, b"+OK\r\n".len()).await;
+    sock.write_all(b"*3\r\n$3\r\nSET\r\n$1\r\nb\r\n$1\r\n2\r\n")
+        .await
+        .expect("set b");
+    let _ = read_exact_n(&mut sock, b"+OK\r\n".len()).await;
+
+    sock.write_all(b"*2\r\n$4\r\nKEYS\r\n$1\r\n*\r\n")
+        .await
+        .expect("keys *");
+    // Read enough bytes for two single-char bulk strings in an *2 array.
+    // The order is not deterministic (HashMap iteration), so we check
+    // shape + bytes-set.
+    let want_len = b"*2\r\n$1\r\na\r\n$1\r\nb\r\n".len();
+    let got = read_exact_n(&mut sock, want_len).await;
+    let s = String::from_utf8_lossy(&got);
+    assert!(s.starts_with("*2\r\n"), "expected *2 array, got {s:?}");
+    assert!(s.contains("$1\r\na\r\n"), "missing key 'a' in {s:?}");
+    assert!(s.contains("$1\r\nb\r\n"), "missing key 'b' in {s:?}");
+    srv.abort();
+}
+
+/// KEYS on an empty DB returns a zero-length array.
+#[tokio::test]
+async fn keys_empty_db_returns_empty_array() {
+    let (port, srv) = spawn_server().await;
+    let mut sock = connect(port).await;
+    sock.write_all(b"*2\r\n$4\r\nKEYS\r\n$1\r\n*\r\n")
+        .await
+        .expect("keys *");
+    let got = read_exact_n(&mut sock, b"*0\r\n".len()).await;
+    assert_eq!(got, b"*0\r\n");
+    srv.abort();
+}
+
+/// Sending a buffer that exceeds the configured `--max-frame-size` must
+/// yield `-ERR Protocol error: frame too big` then close.
+#[tokio::test]
+async fn frame_too_big_protocol_error() {
+    // Tight ceiling: 64 bytes (the BytesMut initial capacity is 4 KiB so
+    // it grows on demand, but our guard fires on `buf.len()` regardless).
+    let (port, srv) = spawn_server_with_limit(64).await;
+    let mut sock = connect(port).await;
+
+    // Craft a frame whose body is larger than the limit but whose header
+    // is valid RESP — `$200\r\n` followed by 200 bytes of payload.
+    // Even before the body completes, accumulated bytes exceed 64.
+    let header = b"$200\r\n";
+    let payload = vec![b'A'; 200];
+    sock.write_all(header).await.expect("write header");
+    sock.write_all(&payload).await.expect("write payload");
+
+    let buf = read_to_end(&mut sock).await;
+    let s = String::from_utf8_lossy(&buf);
+    assert!(
+        s.starts_with("-ERR Protocol error: frame too big"),
+        "expected frame-too-big ERR, got {s:?}"
+    );
+    assert!(s.ends_with("\r\n"));
+    srv.abort();
+}
+
+/// Below-limit traffic on a tight ceiling must still work normally.
+#[tokio::test]
+async fn small_frame_under_limit_passes() {
+    let (port, srv) = spawn_server_with_limit(64).await;
+    let mut sock = connect(port).await;
+    sock.write_all(b"*1\r\n$4\r\nPING\r\n")
+        .await
+        .expect("write PING");
+    let pong = read_exact_n(&mut sock, b"+PONG\r\n".len()).await;
+    assert_eq!(pong, b"+PONG\r\n");
     srv.abort();
 }

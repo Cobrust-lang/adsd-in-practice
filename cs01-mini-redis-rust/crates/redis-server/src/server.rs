@@ -94,11 +94,7 @@ pub async fn run(addr: SocketAddr, store: Store, max_frame_size: usize) -> io::R
 /// Per-connection IO errors are logged, not propagated.  This
 /// function only returns when its `select!` arm chooses `ctrl_c`
 /// (production) or the task is aborted (tests).
-pub async fn run_on(
-    listener: TcpListener,
-    store: Store,
-    max_frame_size: usize,
-) -> io::Result<()> {
+pub async fn run_on(listener: TcpListener, store: Store, max_frame_size: usize) -> io::Result<()> {
     loop {
         tokio::select! {
             accept = listener.accept() => {
@@ -140,11 +136,7 @@ pub async fn run_on(
 /// M1.4 (ADR-0006): after each `read_buf`, if `buf.len() > max_frame_size`,
 /// we send `-ERR Protocol error: frame too big` and close the socket.
 /// This is the *buffer total* not per-frame; v0.2 may tighten this.
-async fn handle_conn(
-    mut socket: TcpStream,
-    store: Store,
-    max_frame_size: usize,
-) -> io::Result<()> {
+async fn handle_conn(mut socket: TcpStream, store: Store, max_frame_size: usize) -> io::Result<()> {
     let mut buf = BytesMut::with_capacity(4096);
 
     loop {

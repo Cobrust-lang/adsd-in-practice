@@ -127,9 +127,7 @@ fn match_class<'a>(pattern: &'a [u8], key: &'a [u8]) -> Option<(&'a [u8], &'a [u
             continue;
         }
         // Range `a-z` (only if `-` is not immediately followed by `]`).
-        if cursor + 2 < pattern.len()
-            && pattern[cursor + 1] == b'-'
-            && pattern[cursor + 2] != b']'
+        if cursor + 2 < pattern.len() && pattern[cursor + 1] == b'-' && pattern[cursor + 2] != b']'
         {
             let (lo, hi) = if b <= pattern[cursor + 2] {
                 (b, pattern[cursor + 2])
