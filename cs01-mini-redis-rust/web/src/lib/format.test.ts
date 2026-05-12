@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseKeysLine, parseStatsLine } from './api/sse';
+import { parseKeysLine, parsePubsubLine, parseStatsLine } from './api/sse';
 import { formatBytes, formatTtl, formatUptime } from './format';
 
 describe('formatBytes', () => {
@@ -119,5 +119,55 @@ describe('parseKeysLine', () => {
 	});
 	it('rejects malformed JSON', () => {
 		expect(parseKeysLine('not-json')).toBeNull();
+	});
+});
+
+describe('parsePubsubLine', () => {
+	it('parses a valid pubsub snapshot', () => {
+		const json = JSON.stringify({
+			channels: [
+				{ name: 'alpha', subscribers: 0 },
+				{ name: 'news', subscribers: 3 }
+			]
+		});
+		const parsed = parsePubsubLine(json);
+		expect(parsed).toEqual({
+			channels: [
+				{ name: 'alpha', subscribers: 0 },
+				{ name: 'news', subscribers: 3 }
+			]
+		});
+	});
+	it('accepts the empty-channels shape (never null)', () => {
+		expect(parsePubsubLine(JSON.stringify({ channels: [] }))).toEqual({ channels: [] });
+	});
+	it('rejects malformed JSON', () => {
+		expect(parsePubsubLine('not-json')).toBeNull();
+	});
+	it('rejects payloads missing the channels field', () => {
+		expect(parsePubsubLine(JSON.stringify({ other: 1 }))).toBeNull();
+	});
+	it('drops malformed entries but keeps valid ones', () => {
+		const json = JSON.stringify({
+			channels: [
+				{ name: 'ok', subscribers: 1 },
+				{ name: 123, subscribers: 2 }, // wrong type for name
+				{ name: 'noNumber', subscribers: 'three' }, // wrong type for count
+				{ name: 'good', subscribers: 7 }
+			]
+		});
+		const parsed = parsePubsubLine(json);
+		expect(parsed).toEqual({
+			channels: [
+				{ name: 'ok', subscribers: 1 },
+				{ name: 'good', subscribers: 7 }
+			]
+		});
+	});
+	it('rejects null payload', () => {
+		expect(parsePubsubLine('null')).toBeNull();
+	});
+	it('rejects empty input', () => {
+		expect(parsePubsubLine('')).toBeNull();
 	});
 });
