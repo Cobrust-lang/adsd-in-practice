@@ -11,6 +11,9 @@
 #![forbid(unsafe_code)]
 
 pub mod glob;
+pub mod metrics;
+
+pub use metrics::{KeyInfo, StoreMetrics};
 
 use std::sync::Arc;
 
@@ -128,14 +131,14 @@ pub enum Reply {
 }
 
 /// A single stored entry.
-struct Entry {
-    value: Vec<u8>,
-    expires_at: Option<Instant>,
+pub(crate) struct Entry {
+    pub(crate) value: Vec<u8>,
+    pub(crate) expires_at: Option<Instant>,
 }
 
 /// Shared inner state — held behind an `RwLock`.
-struct Inner {
-    map: HashMap<String, Entry>,
+pub(crate) struct Inner {
+    pub(crate) map: HashMap<String, Entry>,
 }
 
 impl Inner {
@@ -152,7 +155,7 @@ impl Inner {
 /// `DelayQueue` for **active** TTL expiration (not lazy/on-read).
 #[derive(Clone)]
 pub struct Store {
-    inner: Arc<RwLock<Inner>>,
+    pub(crate) inner: Arc<RwLock<Inner>>,
     /// Sender side of the delay queue channel; used by SET with EX.
     ttl_tx: tokio::sync::mpsc::UnboundedSender<(String, std::time::Duration)>,
     /// Handle kept so the runtime doesn't cancel the task prematurely.
