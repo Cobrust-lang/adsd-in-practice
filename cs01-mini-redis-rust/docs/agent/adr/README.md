@@ -7,6 +7,7 @@
 | ADR | Title | Status | Date |
 |---|---|---|---|
 | [0001](0001-stack-choice.md) | Stack choice — tokio + Axum + hashbrown + rust-embed | accepted | 2026-05-12 |
+| [0002](0002-resp-framing.md) | RESP v2 framing strategy — one-shot parse with Incomplete sentinel | accepted | 2026-05-12 |
 
 ## 命名规范
 
