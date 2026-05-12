@@ -40,6 +40,10 @@ pub fn from_frame(f: Frame) -> Result<Command, Reply> {
         "EXISTS" => parse_exists(&parts),
         "INCR" => parse_single_key_cmd(&parts, "incr", |key| Command::Incr { key }),
         "DECR" => parse_single_key_cmd(&parts, "decr", |key| Command::Decr { key }),
+        // ── M1.3 (ADR-0005) ─────────────────────────────────────────────
+        "ECHO" => parse_echo(&parts),
+        "SELECT" => parse_select(&parts),
+        "QUIT" => parse_quit(&parts),
         unknown => Err(Reply::Error(format!("ERR unknown command '{unknown}'"))),
     }
 }
@@ -185,4 +189,41 @@ fn parse_single_key_cmd(
         ))
     })?;
     Ok(mk_cmd(key))
+}
+
+// ── M1.3 (ADR-0005) parsers ──────────────────────────────────────────────────
+
+fn parse_echo(parts: &[Frame]) -> Result<Command, Reply> {
+    if parts.len() != 2 {
+        return Err(Reply::Error(
+            "ERR wrong number of arguments for 'echo' command".to_owned(),
+        ));
+    }
+    let message = bulk_to_bytes(parts.get(1)).ok_or_else(|| {
+        Reply::Error("ERR wrong number of arguments for 'echo' command".to_owned())
+    })?;
+    Ok(Command::Echo { message })
+}
+
+fn parse_select(parts: &[Frame]) -> Result<Command, Reply> {
+    if parts.len() != 2 {
+        return Err(Reply::Error(
+            "ERR wrong number of arguments for 'select' command".to_owned(),
+        ));
+    }
+    let db_str = bulk_to_string(parts.get(1))
+        .ok_or_else(|| Reply::Error("ERR value is not an integer or out of range".to_owned()))?;
+    let db: i64 = db_str
+        .parse()
+        .map_err(|_| Reply::Error("ERR value is not an integer or out of range".to_owned()))?;
+    Ok(Command::Select { db })
+}
+
+fn parse_quit(parts: &[Frame]) -> Result<Command, Reply> {
+    if parts.len() != 1 {
+        return Err(Reply::Error(
+            "ERR wrong number of arguments for 'quit' command".to_owned(),
+        ));
+    }
+    Ok(Command::Quit)
 }

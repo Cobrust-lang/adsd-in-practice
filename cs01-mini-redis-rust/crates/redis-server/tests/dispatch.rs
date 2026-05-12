@@ -173,3 +173,77 @@ fn dispatch_nil_array_is_error() {
     let err = from_frame(frame).expect_err("nil array must error");
     assert!(matches!(&err, Reply::Error(_)));
 }
+
+// ── M1.3 (ADR-0005) — ECHO / SELECT / QUIT ──────────────────────────────────
+
+#[test]
+fn dispatch_echo() {
+    let frame = parse(b"*2\r\n$4\r\nECHO\r\n$5\r\nhello\r\n");
+    let cmd = from_frame(frame).expect("ECHO must parse");
+    assert!(matches!(cmd, Command::Echo { message } if message == b"hello"));
+}
+
+#[test]
+fn dispatch_echo_case_insensitive() {
+    let frame = parse(b"*2\r\n$4\r\necho\r\n$2\r\nhi\r\n");
+    let cmd = from_frame(frame).expect("echo (lowercase) must parse");
+    assert!(matches!(cmd, Command::Echo { message } if message == b"hi"));
+}
+
+#[test]
+fn dispatch_echo_wrong_arity_is_error() {
+    let frame = parse(b"*1\r\n$4\r\nECHO\r\n");
+    let err = from_frame(frame).expect_err("ECHO without message must error");
+    assert!(
+        matches!(&err, Reply::Error(msg) if msg.contains("wrong number of arguments for 'echo'")),
+        "unexpected error: {err:?}"
+    );
+}
+
+#[test]
+fn dispatch_select_zero() {
+    let frame = parse(b"*2\r\n$6\r\nSELECT\r\n$1\r\n0\r\n");
+    let cmd = from_frame(frame).expect("SELECT 0 must parse");
+    assert!(matches!(cmd, Command::Select { db: 0 }));
+}
+
+#[test]
+fn dispatch_select_non_zero() {
+    let frame = parse(b"*2\r\n$6\r\nSELECT\r\n$1\r\n9\r\n");
+    let cmd = from_frame(frame).expect("SELECT 9 must parse (store reports range error)");
+    assert!(matches!(cmd, Command::Select { db: 9 }));
+}
+
+#[test]
+fn dispatch_select_non_integer_is_error() {
+    let frame = parse(b"*2\r\n$6\r\nSELECT\r\n$3\r\nabc\r\n");
+    let err = from_frame(frame).expect_err("SELECT abc must error at dispatch level");
+    assert!(
+        matches!(&err, Reply::Error(msg) if msg.contains("not an integer")),
+        "unexpected error: {err:?}"
+    );
+}
+
+#[test]
+fn dispatch_quit() {
+    let frame = parse(b"*1\r\n$4\r\nQUIT\r\n");
+    let cmd = from_frame(frame).expect("QUIT must parse");
+    assert!(matches!(cmd, Command::Quit));
+}
+
+#[test]
+fn dispatch_quit_case_insensitive() {
+    let frame = parse(b"*1\r\n$4\r\nquit\r\n");
+    let cmd = from_frame(frame).expect("quit must parse");
+    assert!(matches!(cmd, Command::Quit));
+}
+
+#[test]
+fn dispatch_quit_with_args_is_error() {
+    let frame = parse(b"*2\r\n$4\r\nQUIT\r\n$3\r\nfoo\r\n");
+    let err = from_frame(frame).expect_err("QUIT with arg must error");
+    assert!(
+        matches!(&err, Reply::Error(msg) if msg.contains("wrong number of arguments for 'quit'")),
+        "unexpected error: {err:?}"
+    );
+}

@@ -206,6 +206,47 @@ async fn ttl_active_expiration() {
     assert_eq!(after, Reply::Bulk(None), "key should be gone after TTL");
 }
 
+// ── ADR-0005 (M1.3) — ECHO / SELECT / QUIT ──────────────────────────────────
+
+#[tokio::test(start_paused = true)]
+async fn echo_returns_message_verbatim() {
+    let store = Store::new();
+    let reply = store
+        .execute(Command::Echo {
+            message: b"hello world".to_vec(),
+        })
+        .expect("echo infallible");
+    assert_eq!(reply, Reply::Bulk(Some(b"hello world".to_vec())));
+}
+
+#[tokio::test(start_paused = true)]
+async fn select_db_zero_is_ok() {
+    let store = Store::new();
+    let reply = store
+        .execute(Command::Select { db: 0 })
+        .expect("select infallible");
+    assert_eq!(reply, Reply::Ok);
+}
+
+#[tokio::test(start_paused = true)]
+async fn select_non_zero_db_is_error() {
+    let store = Store::new();
+    let reply = store
+        .execute(Command::Select { db: 9 })
+        .expect("select infallible at StoreError level");
+    assert_eq!(
+        reply,
+        Reply::Error("ERR DB index is out of range".to_owned())
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn quit_returns_ok() {
+    let store = Store::new();
+    let reply = store.execute(Command::Quit).expect("quit infallible");
+    assert_eq!(reply, Reply::Ok);
+}
+
 // ── ADR-0003 Criterion 7 ────────────────────────────────────────────────────
 // SET without TTL overwrites an expiring key; key survives past old TTL.
 

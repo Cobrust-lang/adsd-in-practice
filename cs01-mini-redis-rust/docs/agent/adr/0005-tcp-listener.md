@@ -5,7 +5,7 @@ status: accepted
 date: 2026-05-12
 case: cs01-mini-redis-rust
 supersedes: none
-last_verified_commit: pending
+last_verified_commit: 3a8c58d
 ---
 
 # ADR-0005: RESP TCP listener
