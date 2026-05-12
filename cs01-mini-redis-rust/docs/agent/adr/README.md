@@ -10,6 +10,7 @@
 | [0002](0002-resp-framing.md) | RESP v2 framing strategy — one-shot parse with Incomplete sentinel | accepted | 2026-05-12 |
 | [0003](0003-storage-layout.md) | In-memory storage layout — hashbrown::HashMap + DelayQueue for TTL | accepted | 2026-05-12 |
 | [0004](0004-command-routing.md) | Command routing — Frame → Command via match on first BulkString | accepted | 2026-05-12 |
+| [0005](0005-tcp-listener.md) | RESP TCP listener — accept-loop + per-conn task + BytesMut drain | accepted | 2026-05-12 |
 
 ## 命名规范
 
