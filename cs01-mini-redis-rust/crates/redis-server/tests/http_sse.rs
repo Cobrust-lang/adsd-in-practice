@@ -341,6 +341,112 @@ async fn read_one_data_frame(stream: &mut SseStream, want_event: &str) -> String
     panic!("never saw event {want_event}");
 }
 
+// ── M3.1 (ADR-0009) Pub/Sub SSE ─────────────────────────────────────────────
+
+/// `/api/pubsub` emits 1 Hz `event: pubsub` frames; an empty store
+/// produces `{"channels":[]}` (NOT null).
+#[tokio::test(flavor = "current_thread")]
+async fn pubsub_sse_emits_empty_channels_on_idle_store() {
+    let (port, _state, srv) = spawn_http().await;
+    let mut stream = open_sse(port, "/api/pubsub").await;
+
+    let data = read_one_data_frame(&mut stream, "pubsub").await;
+    assert_eq!(data, r#"{"channels":[]}"#);
+    srv.abort();
+}
+
+/// After a SUBSCRIBE comes in over RESP, the next `/api/pubsub` frame
+/// should list that channel with `subscribers >= 1`.
+#[tokio::test(flavor = "current_thread")]
+async fn pubsub_sse_reflects_resp_subscribe() {
+    let (http_port, state, http_srv) = spawn_http().await;
+    let (resp_port, resp_srv) = spawn_resp_with_state(state.clone()).await;
+
+    // Open SSE first; drain the first (likely-empty) frame as baseline.
+    let mut stream = open_sse(http_port, "/api/pubsub").await;
+    let _ = read_one_data_frame(&mut stream, "pubsub").await;
+
+    // RESP: SUBSCRIBE alerts
+    let mut sub = TcpStream::connect(("127.0.0.1", resp_port))
+        .await
+        .expect("resp connect");
+    sub.write_all(b"*2\r\n$9\r\nSUBSCRIBE\r\n$6\r\nalerts\r\n")
+        .await
+        .expect("write SUBSCRIBE");
+    // Read the SUBSCRIBE ack (`*3\r\n$9\r\nsubscribe\r\n$6\r\nalerts\r\n:1\r\n`
+    // = 35 bytes) so the conn-side state is fully settled.
+    let mut ack = [0u8; 35];
+    tokio::io::AsyncReadExt::read_exact(&mut sub, &mut ack)
+        .await
+        .expect("read sub ack");
+
+    // Within a few SSE frames the snapshot should show "alerts" with
+    // subscribers >= 1.
+    let mut saw = false;
+    for _ in 0..6 {
+        let data = read_one_data_frame(&mut stream, "pubsub").await;
+        if data.contains(r#""name":"alerts""#) && data.contains(r#""subscribers":1"#) {
+            saw = true;
+            break;
+        }
+    }
+    assert!(saw, "never saw alerts in /api/pubsub SSE");
+
+    drop(sub);
+    http_srv.abort();
+    resp_srv.abort();
+}
+
+/// After the subscriber disconnects, the next snapshot frame should
+/// show `subscribers:0` for that channel (entry retained — ADR-0009
+/// §"负面/接受的债": no GC in M3.1).
+#[tokio::test(flavor = "current_thread")]
+async fn pubsub_sse_count_drops_after_subscriber_disconnect() {
+    let (http_port, state, http_srv) = spawn_http().await;
+    let (resp_port, resp_srv) = spawn_resp_with_state(state.clone()).await;
+
+    let mut stream = open_sse(http_port, "/api/pubsub").await;
+    let _ = read_one_data_frame(&mut stream, "pubsub").await;
+
+    let mut sub = TcpStream::connect(("127.0.0.1", resp_port))
+        .await
+        .expect("resp connect");
+    sub.write_all(b"*2\r\n$9\r\nSUBSCRIBE\r\n$2\r\nch\r\n")
+        .await
+        .expect("write sub");
+    // Ack frame: `*3\r\n$9\r\nsubscribe\r\n$2\r\nch\r\n:1\r\n` = 31 bytes.
+    let mut ack = [0u8; 31];
+    tokio::io::AsyncReadExt::read_exact(&mut sub, &mut ack)
+        .await
+        .expect("read ack");
+
+    // Wait until /api/pubsub shows subscribers:1 (so we know the
+    // store snapshot was sampled with the conn live).
+    for _ in 0..6 {
+        let data = read_one_data_frame(&mut stream, "pubsub").await;
+        if data.contains(r#""name":"ch""#) && data.contains(r#""subscribers":1"#) {
+            break;
+        }
+    }
+
+    // Disconnect the subscriber.
+    drop(sub);
+
+    // Within a few more frames the count must drop to 0.
+    let mut saw_zero = false;
+    for _ in 0..6 {
+        let data = read_one_data_frame(&mut stream, "pubsub").await;
+        if data.contains(r#""name":"ch""#) && data.contains(r#""subscribers":0"#) {
+            saw_zero = true;
+            break;
+        }
+    }
+    assert!(saw_zero, "subscribers never dropped to 0 after disconnect");
+
+    http_srv.abort();
+    resp_srv.abort();
+}
+
 // ── Done-criterion item: ctrl_c equivalent — server task drops cleanly ────
 // (real signal can't be sent in-test; abort handle is the test analogue;
 //  already covered above by `srv.abort()` running in every test)

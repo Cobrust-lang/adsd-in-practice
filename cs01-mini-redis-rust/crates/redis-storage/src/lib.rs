@@ -38,7 +38,7 @@ pub enum StoreError {
 /// Wave M1 — covers PING / GET / SET / DEL / EXISTS / INCR / DECR
 ///            + ECHO / SELECT / QUIT (M1.3, ADR-0005)
 ///            + EXPIRE / TTL / PERSIST / TYPE / KEYS (M1.4, ADR-0006).
-/// Wave M3 — adds SUBSCRIBE / PUBLISH / UNSUBSCRIBE.
+/// Wave M3.1 (ADR-0009) — adds SUBSCRIBE / UNSUBSCRIBE / PUBLISH.
 #[derive(Debug, Clone)]
 pub enum Command {
     /// `PING` or `PING <message>`.  With `Some(bytes)` returns the bytes
@@ -108,6 +108,38 @@ pub enum Command {
     Keys {
         pattern: String,
     },
+
+    // ── M3.1 (ADR-0009) Pub/Sub ─────────────────────────────────────────
+    /// `SUBSCRIBE channel [channel ...]` — register the *current connection*
+    /// (caller-tracked) on each channel.  The wire protocol response is one
+    /// `Reply::SubscribeAck` per requested channel; counts are running
+    /// totals managed by the server (per-conn) layer, NOT by the store.
+    /// `Store::execute` does NOT process this variant: the server crate
+    /// calls [`Store::subscribe`] directly because the store can only
+    /// return a `Reply` value, but SUBSCRIBE produces *N* replies plus a
+    /// `broadcast::Receiver`.  Keeping the enum complete lets the
+    /// dispatch layer parse uniformly; the variant simply must not reach
+    /// `Store::execute`.  See ADR-0009 §Q4.
+    Subscribe {
+        channels: Vec<String>,
+    },
+    /// `UNSUBSCRIBE [channel ...]` — drop registrations.  Same routing
+    /// note as `Subscribe`: the *server* handles state transitions; the
+    /// variant exists for parse-side uniformity.  Empty `channels` means
+    /// "unsubscribe from all" — handled by the server crate.
+    Unsubscribe {
+        channels: Vec<String>,
+    },
+    /// `PUBLISH channel message` — broadcast `message` to all current
+    /// subscribers of `channel`.  Returns
+    /// `Reply::Integer(receiver_count_at_send_instant)`.  This is the
+    /// one Pub/Sub command that fits cleanly into `Store::execute`
+    /// because the side-effect (broadcast send) is synchronous and the
+    /// reply is a single integer.
+    Publish {
+        channel: String,
+        message: Vec<u8>,
+    },
 }
 
 /// Reply enum (encoded to RESP frame at the server boundary).
@@ -128,6 +160,37 @@ pub enum Reply {
     /// `Some(_)` (possibly empty), but the variant carries the option
     /// for symmetry with the underlying `Frame::Array`.
     Array(Option<Vec<Vec<u8>>>),
+
+    // ── M3.1 (ADR-0009) Pub/Sub ──────────────────────────────────────────
+    /// Pub/Sub `subscribe` acknowledgement frame.
+    /// Wire shape (Redis 7):
+    /// `*3\r\n$9\r\nsubscribe\r\n$<n>\r\n<channel>\r\n:<count>\r\n`
+    /// where `count` is the *running total* of channels the issuing
+    /// connection is subscribed to *after* this acknowledgement.
+    SubscribeAck {
+        channel: String,
+        count: i64,
+    },
+    /// Pub/Sub `unsubscribe` acknowledgement frame.
+    /// Wire shape (Redis 7):
+    /// `*3\r\n$11\r\nunsubscribe\r\n$<n>\r\n<channel>\r\n:<count>\r\n`
+    /// where `count` is the *remaining* subscriptions after this
+    /// removal.  `channel = None` is the special "unsubscribe-from-all
+    /// when there was nothing subscribed" case Redis really does emit;
+    /// the wire serialises the channel slot as `$-1\r\n` (nil bulk).
+    UnsubscribeAck {
+        channel: Option<String>,
+        count: i64,
+    },
+    /// Pub/Sub server-pushed message frame.
+    /// Wire shape: `*3\r\n$7\r\nmessage\r\n$<n>\r\n<channel>\r\n$<n>\r\n<payload>\r\n`.
+    /// Distinct from `Bulk` / `Array` because it carries a *channel +
+    /// payload* tuple that has no natural representation in the
+    /// pre-M3.1 enum (F24: don't fake a tuple inside an Array).
+    Message {
+        channel: String,
+        payload: Vec<u8>,
+    },
 }
 
 /// A single stored entry.
@@ -139,15 +202,33 @@ pub(crate) struct Entry {
 /// Shared inner state — held behind an `RwLock`.
 pub(crate) struct Inner {
     pub(crate) map: HashMap<String, Entry>,
+    /// M3.1 (ADR-0009): per-channel `tokio::sync::broadcast::Sender`
+    /// for Pub/Sub fan-out.  The wrapped payload is `Arc<Vec<u8>>` so
+    /// N subscribers share the bytes — no per-subscriber clone of the
+    /// payload in the hot path.
+    ///
+    /// Eviction (ADR-0009 §Decision Q1+Q2): we do NOT remove a
+    /// channel's `Sender` once its `receiver_count()` reaches zero —
+    /// M3.1 accepts this small memory debt; M4 release-readiness adds
+    /// an eviction sweep.
+    pub(crate) subscribers: HashMap<String, tokio::sync::broadcast::Sender<Arc<Vec<u8>>>>,
 }
 
 impl Inner {
     fn new() -> Self {
         Self {
             map: HashMap::new(),
+            subscribers: HashMap::new(),
         }
     }
 }
+
+/// Per-channel broadcast capacity for Pub/Sub fan-out (ADR-0009).
+///
+/// 128 frames is a deliberate small ceiling: a lagging subscriber
+/// trips `RecvError::Lagged` and is disconnected (matches real Redis'
+/// behaviour of resetting an over-buffered Pub/Sub client).
+pub const PUBSUB_BROADCAST_CAPACITY: usize = 128;
 
 /// The store. Cheap to clone; internally `Arc<RwLock<Inner>>` (ADR-0003).
 ///
@@ -322,6 +403,88 @@ impl Store {
             Command::Persist { key } => Ok(Self::do_persist(&self.inner, &key)),
             Command::Type { key } => Ok(Self::do_type(&self.inner, &key)),
             Command::Keys { pattern } => Ok(Self::do_keys(&self.inner, &pattern)),
+
+            // ── M3.1 (ADR-0009) Pub/Sub ──────────────────────────────────
+            // SUBSCRIBE / UNSUBSCRIBE produce *N replies + per-conn
+            // state*, which doesn't fit `execute -> single Reply`.
+            // The server crate calls `Store::subscribe` / `unsubscribe`
+            // directly; if either variant reaches `execute` it's a
+            // dispatch bug — return a generic error rather than
+            // panicking (CLAUDE.md §3.1 — non-test code no .unwrap()).
+            Command::Subscribe { .. } | Command::Unsubscribe { .. } => Ok(Reply::Error(
+                "ERR internal: subscribe/unsubscribe must be handled by the server layer"
+                    .to_owned(),
+            )),
+            Command::Publish { channel, message } => Ok(self.do_publish(&channel, message)),
+        }
+    }
+
+    // ── M3.1 (ADR-0009) Pub/Sub helpers ─────────────────────────────────────
+
+    /// Register interest in `channel` and return a `broadcast::Receiver`
+    /// the caller (server crate, per-connection task) must drain.
+    ///
+    /// Creates a fresh broadcast channel of capacity
+    /// [`PUBSUB_BROADCAST_CAPACITY`] on first subscribe; subsequent
+    /// subscribers share the same `Sender`.
+    ///
+    /// Takes the inner write lock briefly (one hashmap lookup +
+    /// possible insert).  Caller is expected to hold the returned
+    /// `Receiver` for as long as the connection is subscribed.
+    #[must_use]
+    pub fn subscribe(&self, channel: &str) -> tokio::sync::broadcast::Receiver<Arc<Vec<u8>>> {
+        let mut guard = self.inner.write();
+        let tx = guard
+            .subscribers
+            .entry(channel.to_owned())
+            .or_insert_with(|| tokio::sync::broadcast::channel(PUBSUB_BROADCAST_CAPACITY).0);
+        tx.subscribe()
+    }
+
+    /// Read-only snapshot of `(channel, receiver_count)` pairs for the
+    /// `/api/pubsub` dashboard.  Sorted by channel name for stable SSE
+    /// output (ADR-0009 §Q7).
+    ///
+    /// Walks the subscribers map under a single read lock; O(N) in
+    /// channel count with one allocation for the output `Vec`.
+    #[must_use]
+    pub fn pubsub_snapshot(&self) -> Vec<(String, usize)> {
+        let guard = self.inner.read();
+        let mut out: Vec<(String, usize)> = guard
+            .subscribers
+            .iter()
+            .map(|(k, tx)| (k.clone(), tx.receiver_count()))
+            .collect();
+        // hashbrown iteration order is non-deterministic — sort by name
+        // so the SSE consumer sees a stable shape (matches the keys
+        // dashboard convention of pure data, not iteration order).
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        out
+    }
+
+    /// `PUBLISH channel message` — fan-out the payload via the channel's
+    /// broadcast sender.  Returns `Reply::Integer(N)` where `N` is the
+    /// number of receivers reached at send instant.
+    ///
+    /// - `channel` not in the subscribers map → `N = 0` (no Sender to
+    ///   send through).
+    /// - `Sender::send` returns `Err(SendError(_))` when *all* receivers
+    ///   have dropped between `entry()` and `send()` — also `N = 0`.
+    ///
+    /// `Arc::new(message)` so M subscribers share one allocation
+    /// (ADR-0009 §"不允许在热路径里 allocate" — N subscribers don't pay
+    /// N × Vec<u8> clones, only N × atomic ref-count increments).
+    fn do_publish(&self, channel: &str, message: Vec<u8>) -> Reply {
+        let guard = self.inner.read();
+        let Some(tx) = guard.subscribers.get(channel) else {
+            return Reply::Integer(0);
+        };
+        let payload = Arc::new(message);
+        match tx.send(payload) {
+            Ok(n) => Reply::Integer(i64::try_from(n).unwrap_or(i64::MAX)),
+            // `SendError` here means receiver_count() was 0 at the send
+            // instant.  Match Redis behaviour: returns 0.
+            Err(_) => Reply::Integer(0),
         }
     }
 

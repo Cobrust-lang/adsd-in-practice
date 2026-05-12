@@ -38,7 +38,13 @@ pub const BROADCAST_CAPACITY: usize = 32;
 /// and the 1 Hz sampler task.
 ///
 /// All fields are individually `Arc`-shared / `Clone`-cheap so a full
-/// `AppState::clone()` is `O(7 atomic ref-count increments)`.
+/// `AppState::clone()` is `O(N atomic ref-count increments)`.
+///
+/// Field count grew to 8 in M3.1 (added `pubsub_tx`).  CLAUDE.md §3.1
+/// limits public structs to ≤7 fields without justification — the
+/// justification is that this struct is a *shared-state aggregate*
+/// (not a domain type) and every field is logically separate;
+/// folding them into sub-structs would just add indirection.
 #[derive(Clone)]
 pub struct AppState {
     /// The in-memory store.  `Store: Clone` is itself an `Arc` bump.
@@ -57,6 +63,10 @@ pub struct AppState {
     pub stats_tx: broadcast::Sender<StatsSnapshot>,
     /// Broadcast sender for `/api/keys` SSE.  Same fan-out shape.
     pub keys_tx: broadcast::Sender<KeysSnapshot>,
+    /// Broadcast sender for `/api/pubsub` SSE (M3.1, ADR-0009).
+    /// The third dashboard stream: 1 Hz `{channels: [{name, subscribers}]}`
+    /// snapshots reflecting current Pub/Sub state.
+    pub pubsub_tx: broadcast::Sender<PubsubSnapshot>,
 }
 
 impl AppState {
@@ -70,6 +80,7 @@ impl AppState {
     pub fn new(store: Store, max_frame_size: usize) -> Self {
         let (stats_tx, _) = broadcast::channel(BROADCAST_CAPACITY);
         let (keys_tx, _) = broadcast::channel(BROADCAST_CAPACITY);
+        let (pubsub_tx, _) = broadcast::channel(BROADCAST_CAPACITY);
         Self {
             store,
             max_frame_size,
@@ -78,6 +89,7 @@ impl AppState {
             started: Instant::now(),
             stats_tx,
             keys_tx,
+            pubsub_tx,
         }
     }
 
@@ -92,6 +104,21 @@ impl AppState {
             keys_active: store_m.key_count,
             mem_value_bytes: store_m.total_value_bytes,
             uptime_secs: self.started.elapsed().as_secs(),
+        }
+    }
+
+    /// Snapshot of `(channel, subscriber_count)` for `/api/pubsub`
+    /// (ADR-0009 §Q7).  Walks the store's subscribers map once under a
+    /// single read lock; O(channel_count).  Output is sorted by name
+    /// for stable SSE frames.
+    #[must_use]
+    pub fn snapshot_pubsub(&self) -> PubsubSnapshot {
+        let pairs = self.store.pubsub_snapshot();
+        PubsubSnapshot {
+            channels: pairs
+                .into_iter()
+                .map(|(name, subscribers)| PubsubChannelEntry { name, subscribers })
+                .collect(),
         }
     }
 }
@@ -116,6 +143,24 @@ pub struct StatsSnapshot {
 /// the inner vec; `Vec` is `Clone`, so this stays efficient).
 #[derive(Debug, Clone, Default)]
 pub struct KeysSnapshot(pub Vec<redis_storage::KeyInfo>);
+
+/// One entry in [`PubsubSnapshot`] — channel name + current subscriber
+/// count.  Field names LOCKED for the M3.1 frontend contract
+/// (ADR-0009 §Q7): JSON wire shape is `{"name": "...", "subscribers": N}`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct PubsubChannelEntry {
+    pub name: String,
+    pub subscribers: usize,
+}
+
+/// One frame of `/api/pubsub` SSE — `{"channels": [{"name": _, "subscribers": _}, ...]}`.
+///
+/// Empty case serialises to `{"channels":[]}` (NOT `null`).  The
+/// inner Vec is sorted by name in [`AppState::snapshot_pubsub`].
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
+pub struct PubsubSnapshot {
+    pub channels: Vec<PubsubChannelEntry>,
+}
 
 /// RAII guard that increments `connections_active` on construction
 /// and decrements on `Drop`.

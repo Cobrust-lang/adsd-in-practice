@@ -543,3 +543,273 @@ async fn small_frame_under_limit_passes() {
     assert_eq!(pong, b"+PONG\r\n");
     srv.abort();
 }
+
+// ── M3.1 (ADR-0009) Pub/Sub ──────────────────────────────────────────────────
+
+/// SUBSCRIBE on a single channel returns the verbatim Redis 7 ack
+/// frame: `*3\r\n$9\r\nsubscribe\r\n$4\r\nnews\r\n:1\r\n`.
+#[tokio::test]
+async fn subscribe_single_channel_returns_redis7_ack() {
+    let (port, srv) = spawn_server().await;
+    let mut sock = connect(port).await;
+
+    sock.write_all(b"*2\r\n$9\r\nSUBSCRIBE\r\n$4\r\nnews\r\n")
+        .await
+        .expect("write SUBSCRIBE");
+    let want = b"*3\r\n$9\r\nsubscribe\r\n$4\r\nnews\r\n:1\r\n";
+    let got = read_exact_n(&mut sock, want.len()).await;
+    assert_eq!(got, want);
+    srv.abort();
+}
+
+/// SUBSCRIBE a b c → three acks with running counts 1, 2, 3.
+#[tokio::test]
+async fn subscribe_multi_channel_returns_running_counts() {
+    let (port, srv) = spawn_server().await;
+    let mut sock = connect(port).await;
+
+    sock.write_all(b"*4\r\n$9\r\nSUBSCRIBE\r\n$1\r\na\r\n$1\r\nb\r\n$1\r\nc\r\n")
+        .await
+        .expect("write SUBSCRIBE a b c");
+
+    let want = [
+        &b"*3\r\n$9\r\nsubscribe\r\n$1\r\na\r\n:1\r\n"[..],
+        &b"*3\r\n$9\r\nsubscribe\r\n$1\r\nb\r\n:2\r\n"[..],
+        &b"*3\r\n$9\r\nsubscribe\r\n$1\r\nc\r\n:3\r\n"[..],
+    ]
+    .concat();
+    let got = read_exact_n(&mut sock, want.len()).await;
+    assert_eq!(got, want);
+    srv.abort();
+}
+
+/// In sub mode, sending GET must return the verbatim Redis 7 error and
+/// keep the connection alive.
+#[tokio::test]
+async fn sub_mode_rejects_get_with_verbatim_error() {
+    let (port, srv) = spawn_server().await;
+    let mut sock = connect(port).await;
+
+    sock.write_all(b"*2\r\n$9\r\nSUBSCRIBE\r\n$1\r\nx\r\n")
+        .await
+        .expect("write SUBSCRIBE");
+    let _ack = read_exact_n(
+        &mut sock,
+        b"*3\r\n$9\r\nsubscribe\r\n$1\r\nx\r\n:1\r\n".len(),
+    )
+    .await;
+
+    // GET foo in sub mode → -ERR Can't execute 'get': ...
+    sock.write_all(b"*2\r\n$3\r\nGET\r\n$3\r\nfoo\r\n")
+        .await
+        .expect("write GET");
+    let want = b"-ERR Can't execute 'get': only (P)SUBSCRIBE / (P)UNSUBSCRIBE / PING / QUIT / RESET are allowed in this context\r\n";
+    let got = read_exact_n(&mut sock, want.len()).await;
+    assert_eq!(got, want);
+
+    // Connection must still be open — PING (allowed in sub mode) should
+    // still produce +PONG.
+    sock.write_all(b"*1\r\n$4\r\nPING\r\n")
+        .await
+        .expect("write PING");
+    let pong = read_exact_n(&mut sock, b"+PONG\r\n".len()).await;
+    assert_eq!(pong, b"+PONG\r\n");
+    srv.abort();
+}
+
+/// Sub-mode SET wall: lowercase `'set'` in the error string per Redis 7.
+#[tokio::test]
+async fn sub_mode_rejects_set_with_lowercase_cmd_in_error() {
+    let (port, srv) = spawn_server().await;
+    let mut sock = connect(port).await;
+    sock.write_all(b"*2\r\n$9\r\nSUBSCRIBE\r\n$1\r\nx\r\n")
+        .await
+        .expect("write SUBSCRIBE");
+    let _ack = read_exact_n(
+        &mut sock,
+        b"*3\r\n$9\r\nsubscribe\r\n$1\r\nx\r\n:1\r\n".len(),
+    )
+    .await;
+
+    sock.write_all(b"*3\r\n$3\r\nSET\r\n$3\r\nfoo\r\n$3\r\nbar\r\n")
+        .await
+        .expect("write SET");
+    let want = b"-ERR Can't execute 'set': only (P)SUBSCRIBE / (P)UNSUBSCRIBE / PING / QUIT / RESET are allowed in this context\r\n";
+    let got = read_exact_n(&mut sock, want.len()).await;
+    assert_eq!(got, want);
+    srv.abort();
+}
+
+/// UNSUBSCRIBE of the only channel → ack count = 0, conn returns to
+/// Normal mode (SET now works again).
+#[tokio::test]
+async fn unsubscribe_returns_to_normal_mode() {
+    let (port, srv) = spawn_server().await;
+    let mut sock = connect(port).await;
+
+    // Enter sub mode.
+    sock.write_all(b"*2\r\n$9\r\nSUBSCRIBE\r\n$3\r\nfoo\r\n")
+        .await
+        .expect("write SUBSCRIBE");
+    let _ack = read_exact_n(
+        &mut sock,
+        b"*3\r\n$9\r\nsubscribe\r\n$3\r\nfoo\r\n:1\r\n".len(),
+    )
+    .await;
+
+    // Unsubscribe foo → ack with count = 0.
+    sock.write_all(b"*2\r\n$11\r\nUNSUBSCRIBE\r\n$3\r\nfoo\r\n")
+        .await
+        .expect("write UNSUBSCRIBE");
+    let want = b"*3\r\n$11\r\nunsubscribe\r\n$3\r\nfoo\r\n:0\r\n";
+    let got = read_exact_n(&mut sock, want.len()).await;
+    assert_eq!(got, want);
+
+    // Conn should be back in Normal mode → SET works.
+    sock.write_all(b"*3\r\n$3\r\nSET\r\n$1\r\nk\r\n$1\r\nv\r\n")
+        .await
+        .expect("write SET");
+    let ok = read_exact_n(&mut sock, b"+OK\r\n".len()).await;
+    assert_eq!(ok, b"+OK\r\n");
+    srv.abort();
+}
+
+/// UNSUBSCRIBE with no args from a non-subscribed conn → single
+/// `unsubscribe / nil / 0` ack frame (Redis 7 quirk; ADR-0009 watch-out).
+#[tokio::test]
+async fn unsubscribe_no_args_on_normal_conn_emits_nil_ack() {
+    let (port, srv) = spawn_server().await;
+    let mut sock = connect(port).await;
+
+    sock.write_all(b"*1\r\n$11\r\nUNSUBSCRIBE\r\n")
+        .await
+        .expect("write UNSUBSCRIBE");
+    let want = b"*3\r\n$11\r\nunsubscribe\r\n$-1\r\n:0\r\n";
+    let got = read_exact_n(&mut sock, want.len()).await;
+    assert_eq!(got, want);
+    srv.abort();
+}
+
+/// PUBLISH against no subscribers → :0.
+#[tokio::test]
+async fn publish_zero_subscribers_returns_zero() {
+    let (port, srv) = spawn_server().await;
+    let mut sock = connect(port).await;
+
+    sock.write_all(b"*3\r\n$7\r\nPUBLISH\r\n$5\r\nnowhe\r\n$3\r\nmsg\r\n")
+        .await
+        .expect("write PUBLISH");
+    let want = b":0\r\n";
+    let got = read_exact_n(&mut sock, want.len()).await;
+    assert_eq!(got, want);
+    srv.abort();
+}
+
+/// SUBSCRIBE on one conn, PUBLISH on another → `message` push frame.
+#[tokio::test]
+async fn publish_propagates_to_subscriber() {
+    let (port, srv) = spawn_server().await;
+
+    // Subscriber socket.
+    let mut sub = connect(port).await;
+    sub.write_all(b"*2\r\n$9\r\nSUBSCRIBE\r\n$4\r\nnews\r\n")
+        .await
+        .expect("write SUBSCRIBE");
+    let _ack = read_exact_n(
+        &mut sub,
+        b"*3\r\n$9\r\nsubscribe\r\n$4\r\nnews\r\n:1\r\n".len(),
+    )
+    .await;
+
+    // Publisher socket.
+    let mut pubsock = connect(port).await;
+    pubsock
+        .write_all(b"*3\r\n$7\r\nPUBLISH\r\n$4\r\nnews\r\n$5\r\nhello\r\n")
+        .await
+        .expect("write PUBLISH");
+    let want_pub = b":1\r\n";
+    let got_pub = read_exact_n(&mut pubsock, want_pub.len()).await;
+    assert_eq!(got_pub, want_pub);
+
+    // Subscriber receives `message / news / hello`.
+    let want_msg = b"*3\r\n$7\r\nmessage\r\n$4\r\nnews\r\n$5\r\nhello\r\n";
+    let got_msg = read_exact_n(&mut sub, want_msg.len()).await;
+    assert_eq!(got_msg, want_msg);
+
+    srv.abort();
+}
+
+/// PUBLISH against 3 subscribers → :3 and all three receive identical
+/// `message` frames.
+#[tokio::test]
+async fn publish_fans_out_to_three_subscribers() {
+    let (port, srv) = spawn_server().await;
+
+    let mut s1 = connect(port).await;
+    let mut s2 = connect(port).await;
+    let mut s3 = connect(port).await;
+    for s in [&mut s1, &mut s2, &mut s3] {
+        s.write_all(b"*2\r\n$9\r\nSUBSCRIBE\r\n$1\r\nc\r\n")
+            .await
+            .expect("sub");
+        let _ack = read_exact_n(s, b"*3\r\n$9\r\nsubscribe\r\n$1\r\nc\r\n:1\r\n".len()).await;
+    }
+
+    let mut pubsock = connect(port).await;
+    pubsock
+        .write_all(b"*3\r\n$7\r\nPUBLISH\r\n$1\r\nc\r\n$2\r\nGO\r\n")
+        .await
+        .expect("publish");
+    let got = read_exact_n(&mut pubsock, b":3\r\n".len()).await;
+    assert_eq!(got, b":3\r\n");
+
+    let want_msg = b"*3\r\n$7\r\nmessage\r\n$1\r\nc\r\n$2\r\nGO\r\n";
+    for s in [&mut s1, &mut s2, &mut s3] {
+        let got = read_exact_n(s, want_msg.len()).await;
+        assert_eq!(got, want_msg);
+    }
+
+    srv.abort();
+}
+
+/// PING in sub mode → +PONG.  Redis 7 behaviour per ADR-0009 §Notes
+/// (NOT the Redis 6 `*2\r\n...pong...` Array shape); verified by the
+/// M3.1 oracle.
+#[tokio::test]
+async fn ping_in_sub_mode_returns_plain_pong() {
+    let (port, srv) = spawn_server().await;
+    let mut sock = connect(port).await;
+    sock.write_all(b"*2\r\n$9\r\nSUBSCRIBE\r\n$1\r\nx\r\n")
+        .await
+        .expect("sub");
+    let _ack = read_exact_n(
+        &mut sock,
+        b"*3\r\n$9\r\nsubscribe\r\n$1\r\nx\r\n:1\r\n".len(),
+    )
+    .await;
+
+    sock.write_all(b"*1\r\n$4\r\nPING\r\n").await.expect("ping");
+    let pong = read_exact_n(&mut sock, b"+PONG\r\n".len()).await;
+    assert_eq!(pong, b"+PONG\r\n");
+    srv.abort();
+}
+
+/// QUIT in sub mode flushes +OK and closes the socket (sub-mode wall
+/// must allow QUIT through).
+#[tokio::test]
+async fn quit_in_sub_mode_closes_socket_after_ok() {
+    let (port, srv) = spawn_server().await;
+    let mut sock = connect(port).await;
+    sock.write_all(b"*2\r\n$9\r\nSUBSCRIBE\r\n$1\r\nq\r\n")
+        .await
+        .expect("sub");
+    let _ack = read_exact_n(
+        &mut sock,
+        b"*3\r\n$9\r\nsubscribe\r\n$1\r\nq\r\n:1\r\n".len(),
+    )
+    .await;
+    sock.write_all(b"*1\r\n$4\r\nQUIT\r\n").await.expect("quit");
+    let buf = read_to_end(&mut sock).await;
+    assert_eq!(buf, b"+OK\r\n");
+    srv.abort();
+}

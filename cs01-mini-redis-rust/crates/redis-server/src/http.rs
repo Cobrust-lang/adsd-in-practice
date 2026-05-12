@@ -1,4 +1,4 @@
-//! Axum HTTP control plane (ADR-0007).
+//! Axum HTTP control plane (ADR-0007, ADR-0009).
 //!
 //! Wave M2.1 — exposes two SSE endpoints driven off a single 1 Hz
 //! sampler that broadcasts to all subscribers via
@@ -8,6 +8,10 @@
 //! - `GET /api/keys`  — `event: keys\ndata: [{…},…]\n\n` per second
 //!   (top 100 keys, hashbrown-ordered — matches Redis `KEYS` ordering
 //!   contract: "returns no specified order").
+//!
+//! Wave M3.1 (ADR-0009) adds a third SSE endpoint:
+//! - `GET /api/pubsub` — `event: pubsub\ndata: {"channels":[...]}\n\n`
+//!   per second.  Drives the SvelteKit `/pubsub` read-only dashboard.
 //!
 //! F24 defence (ADR-0007 watch-out): no `tower::ServiceBuilder` stack
 //! of hidden middleware.  Each route is a plain async handler; the
@@ -34,7 +38,7 @@ use tokio::net::TcpListener;
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
 
-use crate::state::{AppState, KeysSnapshot, StatsSnapshot};
+use crate::state::{AppState, KeysSnapshot, PubsubSnapshot, StatsSnapshot};
 
 /// `/api/keys` sample cap (ADR-0007 §Q3).
 ///
@@ -62,6 +66,7 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/api/stats", get(stats_sse))
         .route("/api/keys", get(keys_sse))
+        .route("/api/pubsub", get(pubsub_sse))
         .with_state(state)
 }
 
@@ -136,6 +141,9 @@ async fn sampler_loop(state: AppState) {
 
         let keys_frame = KeysSnapshot(state.store.sample_keys(KEYS_SAMPLE_LIMIT));
         let _ = state.keys_tx.send(keys_frame);
+
+        let pubsub_frame = state.snapshot_pubsub();
+        let _ = state.pubsub_tx.send(pubsub_frame);
     }
 }
 
@@ -159,6 +167,16 @@ async fn keys_sse(
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
     let rx = state.keys_tx.subscribe();
     let stream = BroadcastStream::new(rx).map(|item| Ok::<_, Infallible>(map_keys_event(&item)));
+    Sse::new(stream).keep_alive(KeepAlive::default())
+}
+
+/// `GET /api/pubsub` — SSE stream of `event: pubsub` frames (ADR-0009).
+/// Payload is `{"channels": [{"name": "...", "subscribers": N}, ...]}`.
+async fn pubsub_sse(
+    State(state): State<AppState>,
+) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    let rx = state.pubsub_tx.subscribe();
+    let stream = BroadcastStream::new(rx).map(|item| Ok::<_, Infallible>(map_pubsub_event(&item)));
     Sse::new(stream).keep_alive(KeepAlive::default())
 }
 
@@ -195,6 +213,22 @@ fn map_keys_event(item: &Result<KeysSnapshot, BroadcastStreamRecvError>) -> Even
                 .collect();
             let json = serde_json::to_string(&payload).unwrap_or_else(|_| "[]".into());
             Event::default().event("keys").data(json)
+        }
+        Err(BroadcastStreamRecvError::Lagged(n)) => {
+            Event::default().event("error").data(format!("lagged:{n}"))
+        }
+    }
+}
+
+/// Convert a pubsub broadcast item into a SSE `Event` (ADR-0009).
+fn map_pubsub_event(item: &Result<PubsubSnapshot, BroadcastStreamRecvError>) -> Event {
+    match item {
+        Ok(snap) => {
+            // `{"channels":[...]}` — empty case serialises to
+            // `{"channels":[]}`, never `null`.
+            let json =
+                serde_json::to_string(snap).unwrap_or_else(|_| r#"{"channels":[]}"#.to_owned());
+            Event::default().event("pubsub").data(json)
         }
         Err(BroadcastStreamRecvError::Lagged(n)) => {
             Event::default().event("error").data(format!("lagged:{n}"))
@@ -260,5 +294,39 @@ mod tests {
         // expiry task), so this is a `#[tokio::test]`.
         let state = AppState::new(Store::new(), 4096);
         let _r: Router = router(state);
+    }
+
+    // ── M3.1 (ADR-0009) Pub/Sub SSE wire shape ───────────────────────────
+
+    #[test]
+    fn pubsub_snapshot_serializes_to_locked_shape() {
+        use crate::state::{PubsubChannelEntry, PubsubSnapshot};
+        let snap = PubsubSnapshot {
+            channels: vec![
+                PubsubChannelEntry {
+                    name: "chat".into(),
+                    subscribers: 12,
+                },
+                PubsubChannelEntry {
+                    name: "news".into(),
+                    subscribers: 3,
+                },
+            ],
+        };
+        let json = serde_json::to_string(&snap).expect("serialize");
+        // Locked wire field names.
+        assert!(json.contains(r#""channels":["#), "got: {json}");
+        assert!(json.contains(r#""name":"chat""#));
+        assert!(json.contains(r#""subscribers":12"#));
+        assert!(json.contains(r#""name":"news""#));
+        assert!(json.contains(r#""subscribers":3"#));
+    }
+
+    #[test]
+    fn pubsub_snapshot_empty_serializes_to_empty_array_not_null() {
+        use crate::state::PubsubSnapshot;
+        let snap = PubsubSnapshot::default();
+        let json = serde_json::to_string(&snap).expect("serialize");
+        assert_eq!(json, r#"{"channels":[]}"#);
     }
 }
