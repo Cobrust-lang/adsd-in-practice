@@ -1,0 +1,22 @@
+/* Tailwind 4: single `@import "tailwindcss"` replaces the legacy
+   `@tailwind base/components/utilities` triplet, and plugins are
+   loaded via `@plugin` (no tailwind.config.ts plugins array).
+   See ADR-0008 §Notes. */
+@import 'tailwindcss';
+
+@plugin 'daisyui' {
+	themes: dark --default, light;
+}
+
+/* Stat card numeric value polish — DaisyUI's `.stat-value` already
+   sets large size; we just keep it tabular so the digits don't dance
+   each frame. */
+.stat-value {
+	font-variant-numeric: tabular-nums;
+}
+
+/* Slow transition on numeric updates so 1 Hz refresh doesn't flash. */
+.stat-value,
+.stat-desc {
+	transition: color 200ms ease-in-out;
+}

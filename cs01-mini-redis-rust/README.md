@@ -68,7 +68,38 @@ cargo run -p redis-server -- --port 6380 --aof data/dump.aof
 redis-cli -p 6380 PING
 ```
 
-监控 UI:`http://localhost:6380/_studio`(从 server binary 暴露)
+监控 UI(M4 单 binary 部署):`http://localhost:6380/_studio`(从 server binary 暴露,rust-embed 在 M4 接入)。M2.2 在 dev 模式下走 vite,见下一节。
+
+## Dev mode (M2.2)
+
+M2.2(Wave M2.2,ADR-0008)ship 了 SvelteKit 前端(`web/`),三页:Dashboard / Keys / Pub/Sub。M2.2 阶段**还没** rust-embed 进 binary —— 是 vite dev + axum HTTP control plane 两进程协作,**M4 才接** rust-embed。
+
+```bash
+# Terminal 1 — backend(RESP :6380 + HTTP/SSE :6381)
+cargo run -p redis-server -- --port 6380 --http-port 6381
+
+# Terminal 2 — frontend(vite :5173,proxy /api → 6381)
+cd web
+pnpm install
+pnpm dev
+# 打开 http://localhost:5173
+```
+
+Frontend 是 SPA(`@sveltejs/adapter-static` + `fallback: 'index.html'`),`pnpm build` 输出到 `web/build/`。
+
+### Pub/Sub 页是 **stub**(显式标记)
+
+`/pubsub` route 现在只显示 "M3 placeholder" 横幅;真正的 SUBSCRIBE / UNSUBSCRIBE / PUBLISH UI 在 Wave M3 实现(顶层 CLAUDE.md §1.3 显式标 stub 原则)。
+
+### Frontend gate
+
+`scripts/frontend-gate.sh` 跑 install (frozen-lockfile) → svelte-check + tsc → vitest → adapter-static build,作为 M2.2 之后的新 gate 6(case-local,非 _shared)。
+
+```bash
+bash scripts/frontend-gate.sh
+```
+
+Required tooling:`node ≥ 20`, `pnpm ≥ 9`(本机 `node v25.9.0` + `pnpm 10.33.0` 已 verified)。
 
 ## Architecture
 
@@ -97,11 +128,11 @@ redis-cli -p 6380 PING
 
 ## Status
 
-- 🚧 M0 scaffold(本阶段)
-- ⬜ M1 backend MVP(RESP + 5 commands + AOF)
-- ⬜ M2 frontend MVP(SvelteKit + 3 pages + Vitest + Playwright)
-- ⬜ M3 single binary + dogfood
-- ⬜ M4 v0.1.0 release + METHODOLOGY-STATUS 更新
+- ✅ M0 scaffold
+- ✅ M1 backend MVP(RESP + 11 commands + docker oracle 22/22)
+- 🚧 M2 frontend MVP(M2.1 Axum HTTP/SSE control plane shipped; M2.2 SvelteKit UI shipped — Pub/Sub 页是 M3 stub)
+- ⬜ M3 Pub/Sub + AOF
+- ⬜ M4 v0.1.0 release + rust-embed 单 binary + METHODOLOGY-STATUS 更新
 
 ## License
 
