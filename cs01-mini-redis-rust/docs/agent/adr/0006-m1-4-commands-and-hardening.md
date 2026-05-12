@@ -5,7 +5,7 @@ status: accepted
 date: 2026-05-12
 case: cs01-mini-redis-rust
 supersedes: none
-last_verified_commit: pending
+last_verified_commit: 0800d86
 ---
 
 # ADR-0006: M1.4 commands + hardening
