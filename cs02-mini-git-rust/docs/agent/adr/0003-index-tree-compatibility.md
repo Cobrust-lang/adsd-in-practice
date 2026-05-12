@@ -5,7 +5,7 @@ status: accepted
 date: 2026-05-13
 case: cs02-mini-git-rust
 supersedes: none
-last_verified_commit: pending
+last_verified_commit: 80471c74288db10b446fe0eb07bd59acef2feb53
 ---
 
 # ADR-0003: Index v2 and canonical tree compatibility
@@ -84,13 +84,13 @@ M2 owns the staging and tree boundary:
 
 ## Done Criteria
 
-- [ ] `mg-core::index` can read and write Git index v2 files with checksum verification.
-- [ ] `mg add <path>` stages regular files, writes blob loose objects, and preserves Git-compatible stage-0 index entries.
-- [ ] `mg write-tree` writes a tree object whose payload real Git can pretty-print.
-- [ ] `git ls-files --stage` can read an mg-written `.mg/index` after `.mg` is renamed or exposed as `.git`.
-- [ ] For flat-file fixtures, `mg write-tree` and `git write-tree` produce the same tree SHA when staging the same files.
-- [ ] The M2 oracle script includes fixed fixtures and at least 1000 deterministic randomized filenames/contents for add/write-tree compatibility.
-- [ ] M2 gates pass: doc coverage, `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, `cargo test --workspace --locked`, and the Git oracle script.
+- [x] `mg-core::index` can read and write Git index v2 files with checksum verification.
+- [x] `mg add <path>` stages regular files, writes blob loose objects, and preserves Git-compatible stage-0 index entries.
+- [x] `mg write-tree` writes a tree object whose payload real Git can pretty-print.
+- [x] `git ls-files --stage` can read an mg-written `.mg/index` after `.mg` is renamed or exposed as `.git`.
+- [x] For flat-file fixtures, `mg write-tree` and `git write-tree` produce the same tree SHA when staging the same files.
+- [x] The M2 oracle script includes fixed fixtures and at least 1000 deterministic randomized filenames/contents for add/write-tree compatibility.
+- [x] M2 gates pass: doc coverage, `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, `cargo test --workspace --locked`, and the Git oracle script.
 
 ## Cross-references
 
