@@ -2,20 +2,30 @@
 //!
 //! No network IO; this crate is pure storage. The server crate calls
 //! `Store::execute(cmd) -> Reply` per request.
+//!
+//! Internal layout (ADR-0003):
+//! - `Arc<parking_lot::RwLock<Inner>>` for cheap clone + fast concurrent reads.
+//! - `hashbrown::HashMap<String, Entry>` as the underlying KV map.
+//! - `tokio::time::DelayQueue` for **active** TTL expiration (never lazy/on-read).
 
 #![forbid(unsafe_code)]
 
 use std::sync::Arc;
-use thiserror::Error;
 
+use futures_util::StreamExt as _;
+use hashbrown::HashMap;
+use parking_lot::RwLock;
+use thiserror::Error;
+use tokio::task::JoinHandle;
+use tokio::time::Instant;
+use tokio_util::time::DelayQueue;
+
+/// Errors that represent internal/invariant failures.
+/// "key not found" is NOT an error — it maps to `Reply::Bulk(None)`.
 #[derive(Debug, Error)]
 pub enum StoreError {
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
-    #[error("key not found")]
-    NotFound,
-    #[error("wrong type")]
-    WrongType,
 }
 
 /// Top-level command enum (decoded from RESP `Array(Some(bulk*))`).
@@ -48,7 +58,7 @@ pub enum Command {
 }
 
 /// Reply enum (encoded to RESP frame at the server boundary).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Reply {
     Pong,
     Bulk(Option<Vec<u8>>),
@@ -57,27 +67,216 @@ pub enum Reply {
     Error(String),
 }
 
-/// The store. Cheap to clone; internally `Arc<inner>` (M1.2).
-#[derive(Clone, Default)]
+/// A single stored entry.
+struct Entry {
+    value: Vec<u8>,
+    expires_at: Option<Instant>,
+}
+
+/// Shared inner state — held behind an `RwLock`.
+struct Inner {
+    map: HashMap<String, Entry>,
+}
+
+impl Inner {
+    fn new() -> Self {
+        Self {
+            map: HashMap::new(),
+        }
+    }
+}
+
+/// The store. Cheap to clone; internally `Arc<RwLock<Inner>>` (ADR-0003).
+///
+/// `Store::new()` spawns a background tokio task that drives a
+/// `DelayQueue` for **active** TTL expiration (not lazy/on-read).
+#[derive(Clone)]
 pub struct Store {
-    _inner: Arc<()>, // M1.2 stub — replace with hashbrown::HashMap + DelayQueue
+    inner: Arc<RwLock<Inner>>,
+    /// Sender side of the delay queue channel; used by SET with EX.
+    ttl_tx: tokio::sync::mpsc::UnboundedSender<(String, std::time::Duration)>,
+    /// Handle kept so the runtime doesn't cancel the task prematurely.
+    _expiry_task: Arc<JoinHandle<()>>,
 }
 
 impl Store {
+    /// Create a new store and spawn the expiration background task.
     #[must_use]
     pub fn new() -> Self {
-        Self::default()
+        let inner = Arc::new(RwLock::new(Inner::new()));
+        let inner_clone = Arc::clone(&inner);
+
+        // Unbounded channel: SET sends (key, duration) → expiry task schedules.
+        let (ttl_tx, mut ttl_rx) =
+            tokio::sync::mpsc::unbounded_channel::<(String, std::time::Duration)>();
+
+        let handle = tokio::spawn(async move {
+            let mut dq: DelayQueue<String> = DelayQueue::new();
+
+            loop {
+                tokio::select! {
+                    // New TTL registration from Store::execute(Set { ttl_secs }).
+                    msg = ttl_rx.recv() => {
+                        match msg {
+                            Some((key, dur)) => { dq.insert(key, dur); }
+                            // Channel closed → all Store clones dropped → exit.
+                            None => break,
+                        }
+                    }
+                    // A key has expired.
+                    Some(expired) = dq.next() => {
+                        let key = expired.into_inner();
+                        let mut guard = inner_clone.write();
+                        // Only remove if the entry is actually expired
+                        // (a later SET with no TTL would have cleared expires_at).
+                        if let Some(entry) = guard.map.get(&key)
+                            && entry.expires_at.is_some_and(|t| t <= Instant::now())
+                        {
+                            guard.map.remove(&key);
+                        }
+                    }
+                }
+            }
+        });
+
+        Self {
+            inner,
+            ttl_tx,
+            _expiry_task: Arc::new(handle),
+        }
     }
 
     /// Execute a command and return a reply.
     ///
     /// # Errors
     ///
-    /// Returns `StoreError` on internal IO or invariant violation;
-    /// "key not found" maps to `Reply::Bulk(None)`, not an error.
-    pub fn execute(&self, _cmd: Command) -> Result<Reply, StoreError> {
-        // M1.2 stub
-        Ok(Reply::Pong)
+    /// Returns `StoreError` on internal IO or invariant violation.
+    /// "Key not found" maps to `Reply::Bulk(None)`, not an error.
+    pub fn execute(&self, cmd: Command) -> Result<Reply, StoreError> {
+        match cmd {
+            Command::Ping => Ok(Reply::Pong),
+
+            Command::Get { key } => {
+                let guard = self.inner.read();
+                match guard.map.get(&key) {
+                    Some(entry) => {
+                        // Check active expiry: entry may have been inserted before
+                        // the background task fires.
+                        if entry.expires_at.is_some_and(|t| t <= Instant::now()) {
+                            // Logically expired; treat as absent.
+                            Ok(Reply::Bulk(None))
+                        } else {
+                            Ok(Reply::Bulk(Some(entry.value.clone())))
+                        }
+                    }
+                    None => Ok(Reply::Bulk(None)),
+                }
+            }
+
+            Command::Set {
+                key,
+                value,
+                ttl_secs,
+            } => {
+                let expires_at =
+                    ttl_secs.map(|secs| Instant::now() + std::time::Duration::from_secs(secs));
+
+                {
+                    let mut guard = self.inner.write();
+                    guard.map.insert(key.clone(), Entry { value, expires_at });
+                }
+
+                if let Some(secs) = ttl_secs {
+                    // Enqueue TTL in background task; ignore send error
+                    // (task may have exited if store is being dropped).
+                    let _ = self
+                        .ttl_tx
+                        .send((key, std::time::Duration::from_secs(secs)));
+                }
+
+                Ok(Reply::Ok)
+            }
+
+            Command::Del { keys } => {
+                let mut guard = self.inner.write();
+                let mut count: i64 = 0;
+                for key in &keys {
+                    if guard.map.remove(key).is_some() {
+                        count += 1;
+                    }
+                }
+                Ok(Reply::Integer(count))
+            }
+
+            Command::Exists { keys } => {
+                let guard = self.inner.read();
+                let now = Instant::now();
+                let mut count: i64 = 0;
+                for key in &keys {
+                    if let Some(entry) = guard.map.get(key) {
+                        // Not expired?
+                        if entry.expires_at.is_none_or(|t| t > now) {
+                            count += 1;
+                        }
+                    }
+                }
+                Ok(Reply::Integer(count))
+            }
+
+            Command::Incr { key } => Ok(Self::incr_by(&self.inner, key, 1)),
+            Command::Decr { key } => Ok(Self::incr_by(&self.inner, key, -1)),
+        }
+    }
+
+    /// Shared INCR/DECR implementation.
+    ///
+    /// Returns `Reply::Error` (not `StoreError`) for non-integer value —
+    /// matching Redis wire protocol behaviour exactly.
+    fn incr_by(inner: &Arc<RwLock<Inner>>, key: String, delta: i64) -> Reply {
+        let mut guard = inner.write();
+        let now = Instant::now();
+
+        let current: i64 = match guard.map.get(&key) {
+            None => 0,
+            Some(entry) => {
+                // Treat an expired entry as absent.
+                if entry.expires_at.is_some_and(|t| t <= now) {
+                    guard.map.remove(&key);
+                    0
+                } else {
+                    // Parse the stored bytes as a decimal integer.
+                    let Some(v) = std::str::from_utf8(&entry.value)
+                        .ok()
+                        .and_then(|s| s.parse::<i64>().ok())
+                    else {
+                        return Reply::Error(
+                            "ERR value is not an integer or out of range".to_owned(),
+                        );
+                    };
+                    v
+                }
+            }
+        };
+
+        let Some(next) = current.checked_add(delta) else {
+            return Reply::Error("ERR value is not an integer or out of range".to_owned());
+        };
+
+        let value = next.to_string().into_bytes();
+        guard.map.insert(
+            key,
+            Entry {
+                value,
+                expires_at: None,
+            },
+        );
+        Reply::Integer(next)
+    }
+}
+
+impl Default for Store {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -85,10 +284,10 @@ impl Store {
 mod tests {
     use super::*;
 
-    #[test]
-    fn store_ping_stub() {
+    #[tokio::test]
+    async fn store_ping() {
         let s = Store::new();
         let r = s.execute(Command::Ping).expect("ping infallible");
-        assert!(matches!(r, Reply::Pong));
+        assert_eq!(r, Reply::Pong);
     }
 }

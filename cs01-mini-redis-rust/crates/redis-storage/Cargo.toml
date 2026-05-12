@@ -8,10 +8,16 @@ description = "In-memory KV + TTL + AOF persistence (cs01)"
 
 [dependencies]
 bytes.workspace = true
+futures-util = { version = "0.3", default-features = false }
 hashbrown.workspace = true
+parking_lot = "0.12"
 thiserror.workspace = true
 tokio = { workspace = true, features = ["time", "fs", "io-util"] }
+tokio-util = { version = "0.7", features = ["time"] }
 tracing.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
 
 [lints]
 workspace = true
