@@ -23,6 +23,7 @@ struct Args {
     aof: Option<String>,
 }
 
+#[allow(clippy::unnecessary_wraps)] // M1.0 scaffold; ? operator lands at M1.1
 fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
     let args = Args::parse();

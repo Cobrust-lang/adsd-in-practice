@@ -8,7 +8,7 @@
 
 | File | Severity | Status | Related ADR | F-pattern | Date |
 |---|---|---|---|---|---|
-| (尚无 finding) | | | | | |
+| [m1-1-p9-missed-shared-doc-coverage](m1-1-p9-missed-shared-doc-coverage.md) | P2 | closed by mitigation | — | F17.x(新 sub-case 候选) | 2026-05-12 |
 
 ## 命名规范
 

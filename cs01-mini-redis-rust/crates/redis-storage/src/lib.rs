@@ -25,12 +25,26 @@ pub enum StoreError {
 #[derive(Debug, Clone)]
 pub enum Command {
     Ping,
-    Get { key: String },
-    Set { key: String, value: Vec<u8>, ttl_secs: Option<u64> },
-    Del { keys: Vec<String> },
-    Exists { keys: Vec<String> },
-    Incr { key: String },
-    Decr { key: String },
+    Get {
+        key: String,
+    },
+    Set {
+        key: String,
+        value: Vec<u8>,
+        ttl_secs: Option<u64>,
+    },
+    Del {
+        keys: Vec<String>,
+    },
+    Exists {
+        keys: Vec<String>,
+    },
+    Incr {
+        key: String,
+    },
+    Decr {
+        key: String,
+    },
 }
 
 /// Reply enum (encoded to RESP frame at the server boundary).
