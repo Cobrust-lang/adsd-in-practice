@@ -11,6 +11,7 @@
 | [0003](0003-storage-layout.md) | In-memory storage layout — hashbrown::HashMap + DelayQueue for TTL | accepted | 2026-05-12 |
 | [0004](0004-command-routing.md) | Command routing — Frame → Command via match on first BulkString | accepted | 2026-05-12 |
 | [0005](0005-tcp-listener.md) | RESP TCP listener — accept-loop + per-conn task + BytesMut drain | accepted | 2026-05-12 |
+| [0006](0006-m1-4-commands-and-hardening.md) | M1.4 — EXPIRE/TTL/PERSIST + TYPE + KEYS glob + PING optional + max-frame-size + docker oracle | accepted | 2026-05-12 |
 
 ## 命名规范
 
