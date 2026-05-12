@@ -34,3 +34,10 @@ M4.3 adds a Tauri v2 app under `web/src-tauri/`. The desktop shell reuses the ex
 - Development override: set `CS01_REDIS_SERVER_BIN=/absolute/path/to/redis-server` when the sidecar binary is not in the default Cargo target path.
 
 `scripts/tauri-gate.sh` is lightweight by default: SvelteKit check/test/build plus targeted `cargo check --manifest-path web/src-tauri/Cargo.toml`. Full desktop bundle creation is opt-in with `CS01_TAURI_FULL_BUILD=1` and must record disk usage before/after.
+
+## M4.3 gate-return patch
+
+The CTO gate return identified two runtime hardening gaps, both patched without changing the ADR-0013 architecture:
+
+- The sidecar no longer connects stdout/stderr to undrained pipes. `web/src-tauri/src/main.rs` uses `Stdio::null()` so long runs or abnormal logging cannot fill a pipe buffer and block `redis-server`.
+- `/api/stats`, `/api/keys`, and `/api/pubsub` SSE responses now include minimal CORS headers. The Tauri production UI issues `EventSource(http://127.0.0.1:6381/api/*)` from the app/WebView origin, so the backend treats it as a cross-origin browser request and returns `Access-Control-Allow-Origin: *` without credentials while the listener remains loopback-only.

@@ -34,3 +34,10 @@ M4.3 在 `web/src-tauri/` 增加 Tauri v2 app。桌面壳复用现有 SvelteKit 
 - 开发覆盖:如果 sidecar binary 不在默认 Cargo target 路径,设置 `CS01_REDIS_SERVER_BIN=/absolute/path/to/redis-server`。
 
 `scripts/tauri-gate.sh` 默认轻量化:跑 SvelteKit check/test/build + 定向 `cargo check --manifest-path web/src-tauri/Cargo.toml`。完整 desktop bundle 需要显式设置 `CS01_TAURI_FULL_BUILD=1`,并记录前后磁盘状态。
+
+## M4.3 守闸补丁
+
+CTO 守闸退回后补两项 runtime hardening:
+
+- sidecar 不再把 stdout/stderr 接到未 drain 的 pipe,改为 `Stdio::null()`,避免长跑或异常日志填满 pipe buffer 阻塞 `redis-server`。
+- `/api/stats`、`/api/keys`、`/api/pubsub` SSE response 增加最小 CORS header。Tauri production UI 从 app/WebView origin 发起 `EventSource(http://127.0.0.1:6381/api/*)`,按跨源浏览器请求处理;server 返回 `Access-Control-Allow-Origin: *` 且不使用 credentials,同时保持 listener loopback-only。

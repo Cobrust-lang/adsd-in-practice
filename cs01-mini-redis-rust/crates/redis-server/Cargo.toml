@@ -33,6 +33,7 @@ anyhow.workspace = true
 
 [dev-dependencies]
 reqwest = { version = "0.12", default-features = false, features = ["stream"] }
+tower = "0.5"
 
 [lints]
 workspace = true

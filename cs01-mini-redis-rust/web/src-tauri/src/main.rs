@@ -176,7 +176,10 @@ fn spawn_sidecar(app: &AppHandle, binary: PathBuf) -> DesktopBackendStatus {
         "--http-port",
         &HTTP_PORT.to_string(),
     ]);
-    command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
 
     let child = match command.spawn() {
         Ok(child) => child,

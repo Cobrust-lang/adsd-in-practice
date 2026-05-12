@@ -165,6 +165,13 @@ Implementation adds `web/src-tauri/` as a Tauri v2 app without refactoring `redi
 - Browser dev mode remains supported because non-Tauri runtime still uses relative `/api/*` paths and Vite proxy.
 - `scripts/tauri-gate.sh` is lightweight by default and only runs the full Tauri bundle when `CS01_TAURI_FULL_BUILD=1` is set.
 
+## Runtime hardening note (M4.3 gate-return patch)
+
+CTO gate review found two production-runtime risks in the first M4.3 implementation, both fixed without changing the ADR-0013 architecture:
+
+1. The Tauri sidecar no longer pipes stdout/stderr without readers. `web/src-tauri/src/main.rs` now sends sidecar stdin/stdout/stderr to `Stdio::null()`, so long-running logs cannot fill an undrained pipe buffer and block the backend process.
+2. The Axum HTTP/SSE control plane now attaches minimal CORS headers to `/api/stats`, `/api/keys`, and `/api/pubsub`. Tauri production loads the static UI from the app/WebView origin while `EventSource(apiPath(...))` connects to `http://127.0.0.1:6381`; the server therefore treats those loopback SSE endpoints as cross-origin browser requests and returns `Access-Control-Allow-Origin: *` without credentials. The listener remains loopback-bound per ADR-0011/ADR-0013, and this preserves the same `/api/*` surface for browser dev mode and desktop mode.
+
 ## Notes
 
 - P9 implementation prompt must explicitly forbid heavy Tauri bundle loops under low disk conditions.

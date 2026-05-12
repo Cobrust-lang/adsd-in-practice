@@ -29,9 +29,10 @@ use std::time::Duration;
 
 use axum::Router;
 use axum::extract::State;
+use axum::http::header::{ACCESS_CONTROL_ALLOW_HEADERS, ACCESS_CONTROL_ALLOW_ORIGIN};
+use axum::response::IntoResponse;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::routing::get;
-use futures_util::Stream;
 use futures_util::stream::StreamExt as _;
 use serde::Serialize;
 use tokio::net::TcpListener;
@@ -49,6 +50,17 @@ pub const KEYS_SAMPLE_LIMIT: usize = 100;
 /// Sampler tick interval (ADR-0007 §Q2).  1 Hz — dashboard refresh
 /// rate, not a hot path.
 pub const SAMPLER_INTERVAL: Duration = Duration::from_secs(1);
+
+/// Minimal CORS policy for the Tauri desktop shell (ADR-0013 M4.3).
+///
+/// The Tauri production WebView loads the static UI from the app origin
+/// while the managed sidecar serves `/api/*` from `127.0.0.1:6381`; browser
+/// CORS therefore still applies to the SSE EventSource requests.  We do not
+/// use credentials and the control plane is loopback-bound, so `*` is the
+/// smallest non-blocking policy that keeps browser dev mode and desktop mode
+/// on the same HTTP surface.
+const LOOPBACK_DESKTOP_CORS_ORIGIN: &str = "*";
+const LOOPBACK_DESKTOP_CORS_HEADERS: &str = "accept, cache-control";
 
 /// Per-key payload emitted on the `/api/keys` SSE stream.  Field
 /// names are LOCKED for the M2.2 frontend (ADR-0007 §Q5).
@@ -150,34 +162,38 @@ async fn sampler_loop(state: AppState) {
 /// `GET /api/stats` — SSE stream of `event: stats` frames.
 ///
 /// Each frame's `data:` line is a JSON `StatsSnapshot`.
-async fn stats_sse(
-    State(state): State<AppState>,
-) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+async fn stats_sse(State(state): State<AppState>) -> impl IntoResponse {
     let rx = state.stats_tx.subscribe();
     // `Sse::new` requires `Stream<Item = Result<Event, _>>`; our
     // mapper produces a plain `Event` and we wrap with `Ok` here so
     // clippy's `unnecessary_wraps` stays happy inside the mapper.
     let stream = BroadcastStream::new(rx).map(|item| Ok::<_, Infallible>(map_stats_event(&item)));
-    Sse::new(stream).keep_alive(KeepAlive::default())
+    with_loopback_desktop_cors(Sse::new(stream).keep_alive(KeepAlive::default()))
 }
 
 /// `GET /api/keys` — SSE stream of `event: keys` frames (JSON array).
-async fn keys_sse(
-    State(state): State<AppState>,
-) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+async fn keys_sse(State(state): State<AppState>) -> impl IntoResponse {
     let rx = state.keys_tx.subscribe();
     let stream = BroadcastStream::new(rx).map(|item| Ok::<_, Infallible>(map_keys_event(&item)));
-    Sse::new(stream).keep_alive(KeepAlive::default())
+    with_loopback_desktop_cors(Sse::new(stream).keep_alive(KeepAlive::default()))
 }
 
 /// `GET /api/pubsub` — SSE stream of `event: pubsub` frames (ADR-0009).
 /// Payload is `{"channels": [{"name": "...", "subscribers": N}, ...]}`.
-async fn pubsub_sse(
-    State(state): State<AppState>,
-) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+async fn pubsub_sse(State(state): State<AppState>) -> impl IntoResponse {
     let rx = state.pubsub_tx.subscribe();
     let stream = BroadcastStream::new(rx).map(|item| Ok::<_, Infallible>(map_pubsub_event(&item)));
-    Sse::new(stream).keep_alive(KeepAlive::default())
+    with_loopback_desktop_cors(Sse::new(stream).keep_alive(KeepAlive::default()))
+}
+
+fn with_loopback_desktop_cors(response: impl IntoResponse) -> impl IntoResponse {
+    (
+        [
+            (ACCESS_CONTROL_ALLOW_ORIGIN, LOOPBACK_DESKTOP_CORS_ORIGIN),
+            (ACCESS_CONTROL_ALLOW_HEADERS, LOOPBACK_DESKTOP_CORS_HEADERS),
+        ],
+        response,
+    )
 }
 
 /// Convert a `BroadcastStream` item into a SSE `Event`.  On
@@ -294,6 +310,30 @@ mod tests {
         // expiry task), so this is a `#[tokio::test]`.
         let state = AppState::new(Store::new(), 4096);
         let _r: Router = router(state);
+    }
+
+    #[tokio::test]
+    async fn stats_sse_allows_tauri_loopback_cors() {
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt as _;
+
+        let state = AppState::new(Store::new(), 4096);
+        let response = router(state)
+            .oneshot(
+                Request::builder()
+                    .uri("/api/stats")
+                    .body(Body::empty())
+                    .expect("request builder succeeds"),
+            )
+            .await
+            .expect("router response succeeds");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get(ACCESS_CONTROL_ALLOW_ORIGIN),
+            Some(&LOOPBACK_DESKTOP_CORS_ORIGIN.parse().expect("valid header"))
+        );
     }
 
     // ── M3.1 (ADR-0009) Pub/Sub SSE wire shape ───────────────────────────
