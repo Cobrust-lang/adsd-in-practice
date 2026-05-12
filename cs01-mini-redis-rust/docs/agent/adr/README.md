@@ -14,6 +14,7 @@
 | [0006](0006-m1-4-commands-and-hardening.md) | M1.4 — EXPIRE/TTL/PERSIST + TYPE + KEYS glob + PING optional + max-frame-size + docker oracle | accepted | 2026-05-12 |
 | [0007](0007-m2-1-axum-sse-control-plane.md) | M2.1 — Axum HTTP control plane + SSE for dashboard / keys (backend only) | accepted | 2026-05-12 |
 | [0008](0008-m2-2-sveltekit-ui.md) | M2.2 — SvelteKit UI (dashboard / keys / pubsub-stub) consuming M2.1 SSE | accepted | 2026-05-12 |
+| [0009](0009-m3-1-pubsub.md) | M3.1 — Pub/Sub (SUBSCRIBE / UNSUBSCRIBE / PUBLISH) + per-conn subscriber state + /pubsub UI swap | accepted | 2026-05-12 |
 
 ## 命名规范
 
