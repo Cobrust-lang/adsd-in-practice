@@ -183,7 +183,7 @@ data: {"channels":[{"name":"news","subscribers":3},{"name":"chat","subscribers":
 
 - [ ] `SUBSCRIBE news` → 客户端收到 `*3\r\n$9\r\nsubscribe\r\n$4\r\nnews\r\n:1\r\n` (subscribe ack, count=1)
 - [ ] 多个 channel:`SUBSCRIBE a b c` → 顺序回 3 个 subscribe ack,count 1/2/3
-- [ ] sub mode 下发 `GET foo` → `-ERR Can't execute 'GET': only (P)SUBSCRIBE / (P)UNSUBSCRIBE / PING / QUIT are allowed in this context\r\n`,连接不掉
+- [ ] sub mode 下发 `GET foo` → `-ERR Can't execute 'GET': only (P)SUBSCRIBE / (P)UNSUBSCRIBE / PING / QUIT / RESET are allowed in this context\r\n`,连接不掉
 - [ ] sub mode 下发 `PING` → `+PONG`(或 `*2\r\n$4\r\npong\r\n$0\r\n\r\n` 看 Redis 行为,verify by oracle)
 - [ ] sub mode 下发 `QUIT` → `+OK` + close socket
 - [ ] `UNSUBSCRIBE news` → ack count 减;`UNSUBSCRIBE`(无 arg)→ 退所有
@@ -265,3 +265,4 @@ data: {"channels":[{"name":"news","subscribers":3},{"name":"chat","subscribers":
 4. **`PUBSUB_BROADCAST_CAPACITY = 128` 公开常量**:Decision 里写了 "broadcast capacity 128",但没说"公开",我们把它 `pub` 出来方便 server 调试 / 测试 introspect。
 5. **`UnsubscribeAck { channel: None, count: 0 }`** 在 `UNSUBSCRIBE`(无 arg)+ 当前无订阅时由 server 直接返回,不走 store。这跟 ADR §Q4 + watch-out 的 nil-channel 边界一致,oracle fixture 6 验证。
 6. **Oracle fixture 6 (PING-in-sub-mode) 直接验证 Spec**:redis-py 的 `pubsub.ping()` 在我们和真 Redis 7 上都返回 `None`(无 raise),说明双方都发的是 `+PONG\r\n`(simple string),而不是 Redis 6 的 Array shape。ADR §Notes 的猜测被 oracle 印证;无需 addendum。
+7. **Pub/Sub helpers landed in `redis-storage/src/lib.rs`, not a separate `pubsub.rs`**:the Cross-references file list predicted `crates/redis-storage/src/pubsub.rs`, but implementation kept helper methods next to `Inner.subscribers` in `lib.rs` to avoid a module split during M3.1. This is a file-layout delta only; ADR-0009's per-channel broadcast + per-conn `ConnState` design remains unchanged.

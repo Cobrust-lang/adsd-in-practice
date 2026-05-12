@@ -80,7 +80,7 @@ CS-01 是一个 Redis 兼容子集 + web 监控控制台。我们需要选择:
 - [ ] `Cargo.toml` workspace 声明 tokio / Axum / hashbrown / rust-embed
 - [ ] `redis-server` binary 用 tokio runtime 启动
 - [ ] `redis-storage` 用 hashbrown 当 KV
-- [ ] `redis-server` 用 rust-embed 嵌入 SvelteKit build(M3 完成)
+- [ ] `redis-server` 用 rust-embed 嵌入 SvelteKit build(M4.3+ deferred; see ADR-0008 deferral and ADR-0013 Tauri sidecar direction)
 - [ ] 在 README "Architecture" 章节标注栈选择
 
 ## Cross-references

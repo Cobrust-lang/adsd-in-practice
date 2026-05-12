@@ -21,23 +21,29 @@
 
 ---
 
-## CS-01 mini-redis-rust(待填)
+## CS-01 mini-redis-rust(0.1.0-rc / M4.2)
 
-> v0.1.0 ship 后填写
+CS-01 是 ADSD 在 Cobrust 之外的第一个强验证 case:网络协议 + async server + persistence + web/desktop release surface。到 M4.2 committed main,agent ADR 共有 **13** 份(0001-0013),agent finding 共有 **7** 份,并已触发一次 **8-agent pre-release audit**(4 internal + 3 persona + 1 deep-source-read)。审计原始结果约 80 条,去重约 50 条:BLOCK 1,HIGH cross-validated 12,HIGH single-agent 14,MED 20,LOW 13。Persona 分数/结论:Mei 4/5,Aleksandr 4/5,Sarah 36/100(WATCH-FROM-DISTANCE,主要卡 release/legal/security/bus-factor)。
 
 | 实践 | 评价 | 改造成本 | 证据 | 备注 |
 |---|---|---|---|---|
-| ADR-driven 决策捕获 | ? | ? h | ? | |
-| Finding-driven 失败 | ? | ? h | ? | |
-| 双语 zh/en doc | ? | ? h | ? | |
-| Wave-based commit | ? | ? h | ? | |
-| 5-gate CI | ? | ? h | ? | |
-| Doc-coverage gate | ? | ? h | ? | |
-| F24 primitive 禁令 | ? | ? h | ? | |
+| ADR-driven 决策捕获 | ✅ 完全有效 | 约 6 h | 13 个 ADR 覆盖 stack/RESP/storage/TCP/M2/M3/M4.1/M4.2/M4.3;ADR-0011/0012 直接从审计 finding 拆 sprint | 两阶段 SOP 有效,但 ADR 写完后必须 cross-check local CLAUDE.md |
+| Finding-driven 失败 | ✅ 完全有效 | 约 3 h | 7 个 finding;TTL oracle bug、CTO 写代码、lagging subscriber、AOF corruption、8-agent audit 都留下证据 | 负面结果没有隐藏,成为 M4.1/M4.2 backlog 来源 |
+| 双语 zh/en doc | 🟡 半失效 | 约 4 h | M4 audit CV-11 抓到 3 个 finding 缺双语摘要;M4.2 扩 doc-coverage gate 修复 | 规则有效,但没有 tooling enforcement 时会沉积 |
+| Wave-based commit | ✅ 完全有效 | 约 1 h | M1-M4.1 commit message 均用 Wave 标记;Tx tag 帮助从 audit 回溯责任面 | 快速 wave merge 会放大 README/metadata sediment,需 M4 sweep |
+| 5-gate CI | ✅ 完全有效 | 约 2 h | fmt/clippy/build/test/doc-coverage 在每个 Rust sprint 守闸;M4.1 critical fixes 后继续跑 | 前端 gate 成为 case-local 第 6 gate |
+| Doc-coverage gate | 🟡 半失效→修复中 | 约 2 h | M1.1 P9 误报无 shared script;M4 audit SA-13 抓到 finding bilingual 未 enforce | M4.2 将 findings mirror 加入 `_shared/doc-coverage.sh` |
+| F24 primitive 禁令 | ✅ 完全有效 | 约 2 h | 不用 BTreeMap 假装 sorted set;Pub/Sub broadcast 通过 ADR-0009 明确 trade-off;unsupported Redis structures 直接 out-of-scope | F24 需要结合 ADR 允许合理 primitive,否则会过度禁止 |
 
-**新 F-pattern**:待填
+**F-pattern 增量候选**:
 
-**总评**:待填
+1. **F1.x Constitution-vs-ADR drift**:local CLAUDE.md 曾禁止 `tokio::sync::broadcast`,ADR-0009 后实际选择 broadcast;local CLAUDE.md 也曾禁止 storage→protocol edge,ADR-0010 后为了 AOF wire compatibility 引入该 edge。根因不是代码错,而是 charter doc 与 decision doc 分裂。Mitigation:ADR 模板增加 "Constitution cross-check" 段。
+2. **F23-A.happy-path-only oracle gap**:Redis oracle 对 happy-path wire compatibility 很有效(TTL rounding bug 被抓),但 malformed input (`SET k v EX 60 GARBAGE`) 直到 deep-source-read 才发现。Mitigation:oracle harness 必须包含 reject-on-malformed/fuzz-style negative cases。
+3. **F8 inverse under-claim**:README 状态落后不是 marketing overreach,而是 under-claim;但对 public readiness 的伤害相同(visitor 以为项目没完成)。Mitigation:release sweep 把 stale status 当 BLOCK。
+4. **F18.CTO-as-implementer**:M1.3 中 CTO 亲自写实现,违反两阶段 dispatch;finding 记录后恢复 P9 dispatch。Mitigation:CTO phase 只能写 ADR/test skeleton,不能写 implementation。
+5. **Audit-team leverage as evidence**:8-agent audit 抓到单 reviewer 守闸漏掉的 release/legal/security/doc/code-source 精确问题,与 ADSD/Cobrust 的 8-dimension audit pattern 对齐。
+
+**总评**:ADSD 在 cs01 上总体成立,尤其 ADR/finding/5-gate/8-agent audit 的收益明确。破点主要是速度导致的文档沉积,以及 Cobrust-derived 规则移植到 Redis domain 时产生的 charter-vs-ADR drift。M4.2 的结论不是“减少文档”,而是把 doc-coverage 从 ADR 扩展到 finding,并把 constitution cross-check 前置到 ADR phase。
 
 ---
 
@@ -85,9 +91,9 @@
 
 ## 写作 checklist(每个 case 完成时)
 
-- [ ] 7 个表格行都填了(不能空)
-- [ ] 改造成本是真实测量(stopwatch 或 commit 时间差),不是估计
-- [ ] 证据有具体 commit SHA / finding 文件 / PR 链接
-- [ ] 新 F-pattern 有 high-specificity 描述(commit / 时间戳引用)
-- [ ] 跟 Cobrust 原始 case 做横向对比(同样实践在 Cobrust 上工作得怎样)
-- [ ] 不掩饰失效,**ADSD 在本 case 上越破,本 repo 越有价值**
+- [x] CS-01 7 个表格行已填(M4.2 rc)
+- [x] CS-01 改造成本使用 sprint/commit 时间级粗估,非精确 stopwatch;最终 v0.1.0 可重测
+- [x] CS-01 证据有具体 ADR/finding 文件引用
+- [x] CS-01 新 F-pattern 有 high-specificity 描述
+- [x] CS-01 跟 Cobrust 原始 case 做横向对比(8-agent audit pattern / ADR/finding/5-gate)
+- [x] CS-01 不掩饰失效:双语 gate 与 charter-vs-ADR drift 已标半失效/候选 F-pattern

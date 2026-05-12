@@ -43,24 +43,25 @@ done
 
 按 `redis-cli --help` 出现频率倒推 + ADSD F22 cadence-aware(先把第一波修好再扩):
 
-**Wave M1**(协议 + 基础 KV):
+**Wave M1**(协议 + 基础 KV) — ✅ shipped @ e24a8d2:
 1. `PING` / `ECHO` / `QUIT` / `SELECT 0`(server 必备)
 2. `SET key val` / `GET key` / `DEL key` / `EXISTS key`
 3. `INCR` / `DECR` / `INCRBY` / `DECRBY`
 4. `EXPIRE key seconds` / `TTL key` / `PERSIST key`
 5. `TYPE key` / `KEYS pattern`
 
-**Wave M2**(SvelteKit UI 接 SSE):
+**Wave M2**(SvelteKit UI 接 SSE) — ✅ shipped @ bf4307c:
 6. `/api/stats` / `/api/keys` SSE
 7. UI:dashboard / keys / pubsub 三页
 
-**Wave M3**(Pub/Sub + AOF):
+**Wave M3**(Pub/Sub + AOF) — ✅ shipped @ bf4307c:
 8. `SUBSCRIBE channel` / `UNSUBSCRIBE` / `PUBLISH`
 9. AOF append + replay on restart
 
 **Wave M4**(release):
-10. release artifacts + doc sweep(M4.2,ADR-0012)
-11. Tauri desktop frontend + managed `redis-server` sidecar(M4.3,ADR-0013);rust-embed 不再是 v0.1.0 primary blocker
+10. ✅ M4.1 critical fixes shipped @ d02aa55(ADR-0011)
+11. 🚧 M4.2 release artifacts + doc sweep(ADR-0012)
+12. ⬜ M4.3 Tauri desktop frontend + managed `redis-server` sidecar(ADR-0013);rust-embed 不再是 v0.1.0 primary blocker
 
 ## 4. 引用结构
 

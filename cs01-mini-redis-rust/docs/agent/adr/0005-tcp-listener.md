@@ -5,7 +5,7 @@ status: accepted
 date: 2026-05-12
 case: cs01-mini-redis-rust
 supersedes: none
-last_verified_commit: 3a8c58d
+last_verified_commit: d02aa55
 ---
 
 # ADR-0005: RESP TCP listener
@@ -202,6 +202,10 @@ while let Some(frame) = framed.next().await { ... framed.send(reply).await? ... 
   - `crates/redis-server/src/encode.rs`(新增,`reply_to_frame`)
   - `crates/redis-server/tests/server_e2e.rs`(新增,12+ E2E 测试)
   - `tests/oracle.sh`(新增 placeholder)
+
+## M4.2 verification addendum
+
+Re-verified during ADR-0012 doc sweep against M4.1 commit `d02aa55`: the TCP listener remains an accept-loop plus per-connection task design, `server.rs` owns connection state, and the M4.1 hardening additions (loopback default, max clients, frame/depth guards, Pub/Sub state handling) are compatible with this ADR's Option A. `last_verified_commit` is re-blessed to `d02aa55` because later M4.3 ADR work is frontend-direction only and does not change the listener design.
 
 ## Notes
 
