@@ -1,0 +1,17 @@
+[package]
+name = "redis-storage"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "In-memory KV + TTL + AOF persistence (cs01)"
+
+[dependencies]
+bytes.workspace = true
+hashbrown.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["time", "fs", "io-util"] }
+tracing.workspace = true
+
+[lints]
+workspace = true

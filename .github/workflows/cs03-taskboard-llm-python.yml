@@ -1,0 +1,46 @@
+name: cs03-taskboard-llm-python
+
+on:
+  push:
+    paths: ['cs03-taskboard-llm-python/**', '_shared/**', '.github/workflows/cs03-taskboard-llm-python.yml']
+  pull_request:
+    paths: ['cs03-taskboard-llm-python/**', '_shared/**', '.github/workflows/cs03-taskboard-llm-python.yml']
+
+defaults:
+  run:
+    working-directory: cs03-taskboard-llm-python
+
+jobs:
+  five-gate:
+    name: 5-gate (Python)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install uv
+        run: curl -LsSf https://astral.sh/uv/install.sh | sh
+      - name: Sync deps
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          uv sync --extra dev
+      - name: Gate 1/5 — ruff format
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          uv run ruff format --check .
+      - name: Gate 2/5 — ruff lint + mypy strict
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          uv run ruff check .
+          uv run mypy --strict src/
+      - name: Gate 3/5 — package importable
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          uv run python -c "import taskboard; print(taskboard.__version__)"
+      - name: Gate 4/5 — pytest + coverage
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          uv run pytest --cov=src --cov-fail-under=80
+      - name: Gate 5/5 — doc-coverage
+        run: bash ../_shared/doc-coverage.sh

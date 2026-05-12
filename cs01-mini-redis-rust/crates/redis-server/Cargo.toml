@@ -1,0 +1,25 @@
+[package]
+name = "redis-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Axum HTTP + RESP TCP listener (cs01)"
+
+[dependencies]
+redis-protocol = { path = "../redis-protocol" }
+redis-storage = { path = "../redis-storage" }
+
+tokio.workspace = true
+axum.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+bytes.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+rust-embed.workspace = true
+clap.workspace = true
+anyhow.workspace = true
+
+[lints]
+workspace = true

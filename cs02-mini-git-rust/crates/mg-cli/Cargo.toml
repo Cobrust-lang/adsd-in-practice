@@ -1,0 +1,21 @@
+[package]
+name = "mg-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "mg — minimal git plumbing CLI (cs02)"
+
+[[bin]]
+name = "mg"
+path = "src/main.rs"
+
+[dependencies]
+mg-core = { path = "../mg-core" }
+clap.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[lints]
+workspace = true

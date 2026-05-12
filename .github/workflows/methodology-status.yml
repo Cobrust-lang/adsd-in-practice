@@ -1,0 +1,43 @@
+name: methodology-status
+
+# Validates the top-level METHODOLOGY-STATUS.md tracking file:
+# - every case directory referenced
+# - no broken internal links
+# - checklists exist for each case
+
+on:
+  push:
+    paths: ['METHODOLOGY-STATUS.md', 'cs0*/**']
+  pull_request:
+    paths: ['METHODOLOGY-STATUS.md', 'cs0*/**']
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check every cs0* dir has a section in METHODOLOGY-STATUS
+        run: |
+          set -e
+          for d in cs0*/; do
+            name="${d%/}"
+            if ! grep -q "## ${name}" METHODOLOGY-STATUS.md; then
+              echo "::error::METHODOLOGY-STATUS.md is missing section for $name"
+              exit 1
+            fi
+          done
+      - name: Check every case has docs/agent/adr/0001-*
+        run: |
+          set -e
+          for d in cs0*/; do
+            if ! ls "$d/docs/agent/adr/0001-"*.md >/dev/null 2>&1; then
+              echo "::error::$d missing docs/agent/adr/0001-*.md"
+              exit 1
+            fi
+          done
+      - name: Check every case has CLAUDE.md
+        run: |
+          set -e
+          for d in cs0*/; do
+            test -f "$d/CLAUDE.md" || { echo "::error::$d missing CLAUDE.md"; exit 1; }
+          done

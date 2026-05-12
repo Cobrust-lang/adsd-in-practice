@@ -1,0 +1,37 @@
+name: cs02-mini-git-rust
+
+on:
+  push:
+    paths: ['cs02-mini-git-rust/**', '_shared/**', '.github/workflows/cs02-mini-git-rust.yml']
+  pull_request:
+    paths: ['cs02-mini-git-rust/**', '_shared/**', '.github/workflows/cs02-mini-git-rust.yml']
+
+defaults:
+  run:
+    working-directory: cs02-mini-git-rust
+
+jobs:
+  five-gate:
+    name: 5-gate (Rust) + git oracle
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: cs02-mini-git-rust
+      - name: Gate 1/5 — cargo fmt
+        run: cargo fmt --all -- --check
+      - name: Gate 2/5 — cargo clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Gate 3/5 — cargo build
+        run: cargo build --workspace --all-targets --locked
+      - name: Gate 4/5 — cargo test
+        run: cargo test --workspace --locked
+      - name: Gate 5/5 — doc-coverage
+        run: bash ../_shared/doc-coverage.sh
+      - name: Oracle — git compatibility (M2+)
+        if: hashFiles('tests/oracle.sh') != ''
+        run: bash tests/oracle.sh

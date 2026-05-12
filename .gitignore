@@ -1,0 +1,68 @@
+# Rust
+target/
+Cargo.lock.bak
+*.rs.bk
+**/*.rs.bk
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+*.egg
+
+# C++
+build/
+build-*/
+*.o
+*.obj
+*.so
+*.dylib
+*.dll
+*.a
+*.lib
+compile_commands.json
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+
+# Web (per case)
+**/node_modules/
+**/.svelte-kit/
+**/dist/
+**/.next/
+**/.vite/
+**/coverage/
+**/playwright-report/
+**/test-results/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Local env
+.env
+.env.local
+*.local
+
+# Logs
+*.log
+logs/
+
+# Per-case ephemeral
+*/.bootstrap-done

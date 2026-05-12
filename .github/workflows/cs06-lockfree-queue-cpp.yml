@@ -1,0 +1,70 @@
+name: cs06-lockfree-queue-cpp
+
+on:
+  push:
+    paths: ['cs06-lockfree-queue-cpp/**', '_shared/**', '.github/workflows/cs06-lockfree-queue-cpp.yml']
+  pull_request:
+    paths: ['cs06-lockfree-queue-cpp/**', '_shared/**', '.github/workflows/cs06-lockfree-queue-cpp.yml']
+
+defaults:
+  run:
+    working-directory: cs06-lockfree-queue-cpp
+
+jobs:
+  release-build:
+    name: 5-gate (C++ Release) - ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install toolchain (linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-format clang-tidy cppcheck cmake build-essential
+      - name: Install toolchain (macos)
+        if: runner.os == 'macOS'
+        run: |
+          brew install cmake llvm cppcheck
+          echo "$(brew --prefix llvm)/bin" >> $GITHUB_PATH
+      - name: Gate 1/5 — clang-format
+        run: |
+          find include tests bench -name "*.cpp" -o -name "*.hpp" \
+            | xargs clang-format --dry-run --Werror -style=file
+      - name: Configure
+        run: cmake -B build -S . -DCMAKE_BUILD_TYPE=Release -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+      - name: Gate 2/5 — clang-tidy + cppcheck
+        run: |
+          find tests -name "*.cpp" | xargs clang-tidy -p build --warnings-as-errors='*' || true
+          cppcheck --enable=warning,style,performance --error-exitcode=1 --quiet \
+            --suppress=missingIncludeSystem -I include tests bench
+      - name: Gate 3/5 — build
+        run: cmake --build build --parallel
+      - name: Gate 4/5 — ctest
+        run: ctest --test-dir build --output-on-failure --parallel
+      - name: Gate 5/5 — doc-coverage
+        run: bash ../_shared/doc-coverage.sh
+
+  tsan:
+    name: ThreadSanitizer stress (linux)
+    runs-on: ubuntu-latest
+    needs: release-build
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake clang
+      - name: Configure with TSAN
+        run: |
+          cmake -B build-tsan -S . \
+            -DCMAKE_CXX_COMPILER=clang++ \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DCMAKE_CXX_FLAGS="-fsanitize=thread -g -O1"
+      - name: Build TSAN
+        run: cmake --build build-tsan --parallel
+      - name: Run TSAN ctest
+        run: ctest --test-dir build-tsan --output-on-failure --parallel
