@@ -176,6 +176,8 @@ CTO gate review found two production-runtime risks in the first M4.3 implementat
 
 The first M4.4 full-bundle release gate failed after all lightweight checks passed because Tauri CLI rejected mixed minor versions: Rust `tauri` resolved to `2.11.1` while npm `@tauri-apps/api` remained `2.9.0` and `@tauri-apps/cli` remained `2.9.5`. The release-safe fix is explicit pinning instead of floating Tauri majors: `@tauri-apps/api = 2.11.0`, `@tauri-apps/cli = 2.11.0`, `tauri = 2.11.1`, and `tauri-build = 2.6.1` (latest matching Tauri v2 build crate line). This keeps runtime packages on Tauri 2.11 and prevents future lock regeneration from drifting back to a 2.9 npm / 2.11 Rust mismatch.
 
+A second M4.4 run reached macOS packaging and built the `.app`, but the default `pnpm tauri build` DMG target failed in `bundle_dmg.sh` because Finder's AppleScript layout step timed out (`AppleEvent timed out`, -1712). That failure is not the dependency mismatch and is environment-dependent on the invoking macOS session. The gate therefore now uses `pnpm tauri build --bundles app` for deterministic full-bundle verification; DMG creation, signing, and notarization remain separate release tasks rather than hidden in the standard readiness gate.
+
 ## Notes
 
 - P9 implementation prompt must explicitly forbid heavy Tauri bundle loops under low disk conditions.

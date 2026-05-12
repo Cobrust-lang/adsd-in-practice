@@ -7,8 +7,11 @@
 #   - runs pnpm check/test/build for the shared SvelteKit UI
 #   - runs targeted cargo check for web/src-tauri only
 #
-# Set CS01_TAURI_FULL_BUILD=1 to opt into `pnpm tauri build` for release
-# readiness. Record `df -h .` before/after when doing that heavy step.
+# Set CS01_TAURI_FULL_BUILD=1 to opt into `pnpm tauri build --bundles app`
+# for release readiness. Record `df -h .` before/after when doing that heavy step.
+# The macOS DMG target is intentionally excluded from this gate because its
+# Finder AppleScript layout step is environment-dependent; signing/notarization
+# and installer packaging remain explicit release tasks.
 
 set -euo pipefail
 
@@ -58,8 +61,8 @@ echo ">> cargo check --manifest-path src-tauri/Cargo.toml"
 cargo check --manifest-path "${TAURI_DIR}/Cargo.toml"
 
 if [[ "${CS01_TAURI_FULL_BUILD:-0}" == "1" ]]; then
-    echo ">> CS01_TAURI_FULL_BUILD=1 set; running pnpm tauri build"
-    pnpm tauri build
+    echo ">> CS01_TAURI_FULL_BUILD=1 set; running pnpm tauri build --bundles app"
+    pnpm tauri build --bundles app
 else
     echo ">> skipping full Tauri bundle (set CS01_TAURI_FULL_BUILD=1 to run)"
 fi

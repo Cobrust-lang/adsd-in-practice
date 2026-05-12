@@ -51,6 +51,8 @@ This blocker is closed by explicit release pins and regenerated lockfiles:
 
 The engineering choice is to move npm forward to the Rust-resolved 2.11 line, not downgrade Rust crates, because the existing Cargo lock already validated `tauri 2.11.1` through lightweight checks and `@tauri-apps/api 2.11.1` is not published while `@tauri-apps/api 2.11.0` is the current npm 2.11 API release. Full sidecar signing/notarization remains a separate release-readiness risk.
 
+After the mismatch was fixed, `pnpm tauri build` reached macOS packaging and produced the `.app`, but the default DMG target failed when Finder's AppleScript layout step timed out (`AppleEvent timed out`, -1712). The readiness gate now verifies the deterministic app bundle with `pnpm tauri build --bundles app`; DMG/signing/notarization stay outside this gate and must be handled as release engineering work, not as a dependency-alignment blocker.
+
 ## Bilingual sync
 
 Human-readable abstracts exist in:
