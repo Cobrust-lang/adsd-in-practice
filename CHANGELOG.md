@@ -2,9 +2,9 @@
 
 All notable changes to ADSD in Practice are documented in this file.
 
-The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). This repository is not tagged yet; `0.1.0-rc` is the cs01 release-candidate documentation state, not a published stable release.
+The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). This repository is ready for the cs01 `v0.1.0` tag; the tag itself has not been created in this changelog entry.
 
-## [0.1.0-rc] - 2026-05-12
+## [0.1.0-ready] - 2026-05-13
 
 ### Added
 
@@ -22,7 +22,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Thi
 - M4.1 closed pre-release critical issues around default bind address, max frame depth, max clients, stricter command parsing, AOF file mode / bounded channel semantics, AOF flush naming, and Pub/Sub lag policy documentation.
 - M4.2 removes stale README, bootstrap, ADR metadata, and methodology placeholders surfaced by the 8-agent audit.
 
-### Known gaps before final `v0.1.0`
+### Release-readiness status
 
-- M4.3 Tauri desktop shell source, lightweight gate, sidecar lifecycle, and allowlisted CORS are integrated; full platform bundle/signing/notarization remains a release-readiness task and must be run explicitly with disk usage recorded.
+- CTO final audit on main `31b52a1` passed doc-coverage, cargo fmt, cargo clippy, cargo test, prior integration oracle coverage (23/23 RESP, 6/6 Pub/Sub, 7/7 AOF), and the opt-in Tauri `.app` bundle gate: `CS01_TAURI_FULL_BUILD=1 bash scripts/tauri-gate.sh` produced `cs01-mini-redis-rust/web/src-tauri/target/release/bundle/macos/CS01 mini-redis.app`.
+- DMG creation, signing, and notarization remain out-of-gate future release-engineering risks and are not claimed as complete for this tag-prep state.
 - AUTH, TLS, replication, cluster, Lua, streams, modules, RDB, PSUBSCRIBE/PUNSUBSCRIBE, and full transaction semantics remain out of scope for cs01 `0.1.0`.

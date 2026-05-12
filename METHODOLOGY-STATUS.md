@@ -21,9 +21,9 @@
 
 ---
 
-## CS-01 mini-redis-rust(0.1.0-rc / M4.3 source-light gate; M4.4 release-readiness pending)
+## CS-01 mini-redis-rust(0.1.0-ready / M4.4 `.app` bundle gate passed)
 
-CS-01 是 ADSD 在 Cobrust 之外的第一个强验证 case:网络协议 + async server + persistence + web/desktop release surface。到 M4.3 committed main,agent ADR 共有 **13** 份(0001-0013),agent finding 共有 **8** 份,并已触发一次 **8-agent pre-release audit**(4 internal + 3 persona + 1 deep-source-read)。审计原始结果约 80 条,去重约 50 条:BLOCK 1,HIGH cross-validated 12,HIGH single-agent 14,MED 20,LOW 13。Persona 分数/结论:Mei 4/5,Aleksandr 4/5,Sarah 36/100(WATCH-FROM-DISTANCE,主要卡 release/legal/security/bus-factor)。M4.3 已提交 Tauri source/lightweight gate;full Tauri bundle/signing/sidecar staging 仍是 M4.4 release-readiness work,不在此处伪装成已完成。
+CS-01 是 ADSD 在 Cobrust 之外的第一个强验证 case:网络协议 + async server + persistence + web/desktop release surface。到 v0.1.0 tag-prep main `31b52a1`,agent ADR 共有 **13** 份(0001-0013),agent finding 共有 **8** 份,并已触发一次 **8-agent pre-release audit**(4 internal + 3 persona + 1 deep-source-read)。审计原始结果约 80 条,去重约 50 条:BLOCK 1,HIGH cross-validated 12,HIGH single-agent 14,MED 20,LOW 13。Persona 分数/结论:Mei 4/5,Aleksandr 4/5,Sarah 36/100(WATCH-FROM-DISTANCE,主要卡 release/legal/security/bus-factor)。M4.4 已在 `31b52a1` 通过 `CS01_TAURI_FULL_BUILD=1 bash scripts/tauri-gate.sh` 的 macOS `.app` bundle gate,产物为 `cs01-mini-redis-rust/web/src-tauri/target/release/bundle/macos/CS01 mini-redis.app`;DMG、signing、notarization 仍是 out-of-gate future release-engineering risk,不伪装成已完成。
 
 | 实践 | 评价 | 改造成本 | 证据 | 备注 |
 |---|---|---|---|---|

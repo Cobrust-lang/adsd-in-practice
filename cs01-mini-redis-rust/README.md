@@ -20,7 +20,7 @@ The product goal is a small, inspectable Redis-like server that works with `redi
 
 CS-01 implements a real RESP TCP server, command router, in-memory storage, TTL handling, AOF persistence, Pub/Sub, Axum HTTP/SSE control plane, and SvelteKit monitoring UI.
 
-It is not production Redis. It is a release-candidate case study for `0.1.0`.
+It is not production Redis. It is a tag-ready case study for `0.1.0`; DMG creation, signing, and notarization remain separate future release-engineering work.
 
 ## Prerequisites
 
@@ -50,7 +50,7 @@ mkdir -p data
 cargo run -p redis-server -- --port 6380 --aof data/dump.aof
 ```
 
-AOF is a simplified append-only mode with no rewrite/compaction in `0.1.0-rc`.
+AOF is a simplified append-only mode with no rewrite/compaction in `0.1.0-ready`.
 
 ## Dev mode and UI
 
@@ -81,7 +81,7 @@ The gate runs install/check/test/build for `web/`. If Node or pnpm is unavailabl
 
 ## Supported commands
 
-Supported in the current committed `0.1.0-rc` line:
+Supported in the current committed `0.1.0-ready` line:
 
 - Connection / utility: `PING`, `ECHO`, `SELECT 0`, `QUIT`
 - String KV: `SET key value`, `SET key value EX seconds`, `GET`, `DEL`, `EXISTS`
@@ -89,7 +89,7 @@ Supported in the current committed `0.1.0-rc` line:
 - Expiry / introspection: `EXPIRE`, `TTL`, `PERSIST`, `TYPE`, `KEYS`
 - Pub/Sub: `SUBSCRIBE`, `UNSUBSCRIBE`, `PUBLISH`
 
-Not implemented in `0.1.0-rc`:
+Not implemented in `0.1.0-ready`:
 
 - AUTH / ACL / TLS
 - replication / cluster
@@ -139,7 +139,7 @@ bash scripts/tauri-gate.sh
 CS01_TAURI_FULL_BUILD=1 bash scripts/tauri-gate.sh
 ```
 
-当前 M4.3 状态:已提交 Tauri source/config 和 local-dev sidecar lifecycle。完整签名/ notarization / platform bundle 验证不在默认 gate 中;release 前必须单独记录 `df -h .` before/after 并跑一次 full bundle。
+当前 tag-prep 状态:`31b52a1` 已通过 opt-in full Tauri `.app` bundle gate:`CS01_TAURI_FULL_BUILD=1 bash scripts/tauri-gate.sh`,产物为 `web/src-tauri/target/release/bundle/macos/CS01 mini-redis.app`。DMG、signing、notarization 不在标准 gate 内,仍是 separate future release-engineering work,本 README 不声明它们已完成。
 
 ## Architecture
 
@@ -179,7 +179,7 @@ CS01_TAURI_FULL_BUILD=1 bash scripts/tauri-gate.sh
 - ✅ M3 Pub/Sub + AOF
 - ✅ M4.1 critical fixes: security + AOF + dispatch + Pub/Sub hardening
 - ✅ M4.2 doc sweep + release artifacts ([ADR-0012](docs/agent/adr/0012-m4-2-doc-sweep-release-artifacts.md))
-- ✅ M4.3 Tauri desktop frontend source + managed sidecar lightweight gate ([ADR-0013](docs/agent/adr/0013-tauri-desktop-frontend.md)); full bundle/signing verification remains release-readiness work; rust-embed single-binary deferred
+- ✅ M4.3/M4.4 Tauri desktop frontend + managed sidecar + macOS `.app` bundle gate ([ADR-0013](docs/agent/adr/0013-tauri-desktop-frontend.md)); DMG/signing/notarization remain separate future release-engineering work; rust-embed single-binary deferred
 
 ## Docs
 

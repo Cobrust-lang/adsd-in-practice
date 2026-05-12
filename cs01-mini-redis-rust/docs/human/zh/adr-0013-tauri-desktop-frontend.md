@@ -35,7 +35,7 @@ M4.3 在 `web/src-tauri/` 增加 Tauri v2 app。桌面壳复用现有 SvelteKit 
 
 `scripts/tauri-gate.sh` 默认轻量化:跑 SvelteKit check/test/build + 定向 `cargo check --manifest-path web/src-tauri/Cargo.toml`。完整 desktop bundle 需要显式设置 `CS01_TAURI_FULL_BUILD=1`,并记录前后磁盘状态。
 
-M4.4 full-bundle gate 曾因 npm Tauri 2.9.x 与 Rust `tauri` 2.11.1 minor mismatch 失败;修复为显式 pin `@tauri-apps/api`/`@tauri-apps/cli` 到 2.11.0、`tauri` 到 2.11.1、`tauri-build` 到 2.6.1,避免 lockfile 再生成时回漂。修复后默认 DMG target 仍会因 Finder AppleScript layout timeout 受环境影响;release-readiness gate 改为确定性验证 `pnpm tauri build --bundles app`,DMG/signing/notarization 独立处理。
+M4.4 full-bundle gate 先因 npm Tauri 2.9.x 与 Rust `tauri` 2.11.1 minor mismatch 失败;修复为显式 pin `@tauri-apps/api`/`@tauri-apps/cli` 到 2.11.0、`tauri` 到 2.11.1、`tauri-build` 到 2.6.1,避免 lockfile 再生成时回漂。修复后默认 DMG target 仍会因 Finder AppleScript layout timeout 受环境影响;release-readiness gate 改为确定性验证 `pnpm tauri build --bundles app`,该 `.app` bundle gate 已在 `31b52a1` 通过,DMG/signing/notarization 作为 future release-engineering work 独立处理。
 
 ## M4.3 守闸补丁
 

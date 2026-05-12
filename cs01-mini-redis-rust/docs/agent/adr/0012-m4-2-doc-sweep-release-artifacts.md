@@ -5,7 +5,7 @@ status: accepted
 date: 2026-05-12
 case: cs01-mini-redis-rust
 supersedes: none
-last_verified_commit: 337d01e
+last_verified_commit: 31b52a1
 ---
 
 # ADR-0012: M4.2 doc sweep + release artifacts
@@ -69,7 +69,7 @@ All buckets ship in one P9 sprint(7 buckets × 5-9 items = ~30 sub-items)。P9 m
 
 - LICENSE-APACHE:standard Apache 2.0 text(rustls-tls / tokio 用同款)
 - LICENSE-MIT:standard MIT text
-- CHANGELOG.md:keep-a-changelog format,首行 0.1.0-rc 占位(M4.3 tag 时 finalize)
+- CHANGELOG.md:keep-a-changelog format;A14.3 release-stamp converts the former `0.1.0-rc` placeholder into a `0.1.0-ready (2026-05-13)` tag-prep entry without inventing a tag SHA
 - CONTRIBUTING.md:ADSD-aware,链 `_shared/adr-template.md` + `_shared/finding-template.md` + 5-gate / doc-coverage / Tx-tag 流程
 - SECURITY.md:disclosure 走 email + 24h ack SLA(占位),threat model 简引 finding m4-pre-release-audit-team-aggregation
 - METHODOLOGY-STATUS.md cs01 节:含 wave M0→M4.1 实际进展 + 8-agent audit 数据 + F-pattern 候选(`F1.x constitution-vs-ADR drift` + `F23-A.gap happy-path-only oracle`)
@@ -107,14 +107,14 @@ For README §1 (cs01) — 新开头:
 ### Release artifacts (Bucket A)
 - [x] `LICENSE-APACHE` exists at repo root with standard Apache-2.0 text
 - [x] `LICENSE-MIT` exists at repo root with repository copyright holder
-- [x] `CHANGELOG.md` exists at repo root,首条 entry `0.1.0-rc (2026-05-12)` 列 M1-M4.1 summary and M4.3 known gap
+- [x] `CHANGELOG.md` exists at repo root;A14.3 updated first entry to `0.1.0-ready (2026-05-13)`, lists M1-M4.4 readiness evidence, and explicitly keeps DMG/signing/notarization out-of-gate
 - [x] `cs01-mini-redis-rust/CHANGELOG.md` 同结构
 - [x] `CONTRIBUTING.md` exists at repo root,提到 ADR/finding/5-gate/doc-coverage/Tx-tag/bilingual rule
 - [x] `SECURITY.md` exists at repo root with disclosure path
 - [x] `METHODOLOGY-STATUS.md` cs01 section ≥ 200 字,列实际 ADR/finding 计数 + persona scores + F-pattern 候选
 
 ### README sediment (Bucket B)
-- [x] README §Status:M1 ✅ / M2 ✅ / M3 ✅ / M4.1 ✅ / M4.2 ✅ / M4.3 ✅ source/light gate,with full bundle/signing explicitly pending release-readiness work + 各 link 对应 ADR
+- [x] README §Status:M1 ✅ / M2 ✅ / M3 ✅ / M4.1 ✅ / M4.2 ✅ / M4.3/M4.4 ✅ Tauri `.app` bundle gate,with DMG/signing/notarization explicitly out-of-gate future release-engineering work + 各 link 对应 ADR
 - [x] README §"Pub/Sub 页是 stub" 段删除,改 §"Pub/Sub 页是 read-only dashboard (M3.1)" + read-only banner doc
 - [x] README §Quick-start 第一命令 `cargo run -p redis-server -- --port 6380`(无 --aof)
 - [x] README §"Persistence (M3.2)" 子节单独说 `--aof` + 需 `mkdir -p data/`

@@ -5,7 +5,7 @@ status: accepted
 date: 2026-05-13
 case: cs01-mini-redis-rust
 supersedes: ADR-0008 rust-embed release target; ADR-0012 M4.3 rust-embed-only framing
-last_verified_commit: 337d01e
+last_verified_commit: 31b52a1
 ---
 
 # ADR-0013: Tauri desktop frontend becomes the primary release surface
@@ -143,7 +143,8 @@ Rationale:
 - [x] Rust fmt/clippy/build/test/doc-coverage pass before merge.
 - [x] Frontend gate pass before merge.
 - [x] Tauri lightweight gate pass before merge.
-- [ ] Full Tauri bundle build is run only once for release readiness, with disk usage before/after recorded; M4.4 still tracks this as pending full bundle/signing verification.
+- [x] Full Tauri `.app` bundle build is run once for release readiness at `31b52a1`: `CS01_TAURI_FULL_BUILD=1 bash scripts/tauri-gate.sh` produced `web/src-tauri/target/release/bundle/macos/CS01 mini-redis.app`.
+- [ ] DMG creation, signing, and notarization remain out-of-gate future release-engineering work; do not claim them for v0.1.0 tag prep.
 - [x] Oracle compatibility remains non-regressed because the sidecar binary is the same `redis-server`.
 
 ## Cross-references
@@ -181,5 +182,5 @@ A second M4.4 run reached macOS packaging and built the `.app`, but the default 
 ## Notes
 
 - P9 implementation prompt must explicitly forbid heavy Tauri bundle loops under low disk conditions.
-- Full signing/notarization/platform bundle readiness remains unclaimed until a release-readiness run records disk usage and executes `CS01_TAURI_FULL_BUILD=1 bash scripts/tauri-gate.sh`.
+- Full `.app` bundle readiness is claimed at `31b52a1` after `CS01_TAURI_FULL_BUILD=1 bash scripts/tauri-gate.sh` produced `web/src-tauri/target/release/bundle/macos/CS01 mini-redis.app`; signing/notarization/DMG readiness remains unclaimed and out-of-gate.
 - If Tauri sidecar packaging turns out to require additional platform-specific signing/notarization work, record that as a finding and keep v0.1.0 as an unsigned local-dev desktop preview rather than inventing fake release readiness.
