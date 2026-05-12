@@ -30,15 +30,17 @@
 
 use std::io;
 use std::net::SocketAddr;
+use std::sync::atomic::Ordering;
 
 use bytes::{Buf, BytesMut};
 use redis_protocol::{Frame, ProtocolError};
-use redis_storage::{Command, Store};
+use redis_storage::Command;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
 use crate::dispatch::from_frame;
 use crate::encode::reply_to_frame;
+use crate::state::{AppState, ConnGuard};
 
 /// Default `max-frame-size` guard threshold: 512 MiB.
 ///
@@ -64,15 +66,15 @@ pub const DEFAULT_MAX_FRAME_SIZE: usize = 512 * 1024 * 1024;
 /// Returns `io::Error` if the listener cannot bind.  Per-connection
 /// IO errors are logged but **never** propagated — one bad connection
 /// must not kill the server (ADR-0005 §"Consequences/正面").
-pub async fn run(addr: SocketAddr, store: Store, max_frame_size: usize) -> io::Result<()> {
+pub async fn run(addr: SocketAddr, state: AppState) -> io::Result<()> {
     let listener = TcpListener::bind(addr).await?;
     let local_addr = listener.local_addr()?;
     tracing::info!(
         addr = %local_addr,
-        max_frame_size,
+        max_frame_size = state.max_frame_size,
         "RESP listener bound"
     );
-    run_on(listener, store, max_frame_size).await
+    run_on(listener, state).await
 }
 
 /// Run the accept loop on an already-bound `TcpListener`.
@@ -94,15 +96,15 @@ pub async fn run(addr: SocketAddr, store: Store, max_frame_size: usize) -> io::R
 /// Per-connection IO errors are logged, not propagated.  This
 /// function only returns when its `select!` arm chooses `ctrl_c`
 /// (production) or the task is aborted (tests).
-pub async fn run_on(listener: TcpListener, store: Store, max_frame_size: usize) -> io::Result<()> {
+pub async fn run_on(listener: TcpListener, state: AppState) -> io::Result<()> {
     loop {
         tokio::select! {
             accept = listener.accept() => {
                 match accept {
                     Ok((socket, peer)) => {
-                        let store = store.clone();
+                        let state = state.clone();
                         tokio::spawn(async move {
-                            if let Err(e) = handle_conn(socket, store, max_frame_size).await {
+                            if let Err(e) = handle_conn(socket, state).await {
                                 tracing::warn!(peer = %peer, error = %e, "conn closed with error");
                             }
                         });
@@ -136,7 +138,14 @@ pub async fn run_on(listener: TcpListener, store: Store, max_frame_size: usize) 
 /// M1.4 (ADR-0006): after each `read_buf`, if `buf.len() > max_frame_size`,
 /// we send `-ERR Protocol error: frame too big` and close the socket.
 /// This is the *buffer total* not per-frame; v0.2 may tighten this.
-async fn handle_conn(mut socket: TcpStream, store: Store, max_frame_size: usize) -> io::Result<()> {
+async fn handle_conn(mut socket: TcpStream, state: AppState) -> io::Result<()> {
+    // RAII counter (ADR-0007 §Q6): increment connections_active here,
+    // decrement on Drop.  Take the guard BEFORE any `?` so even
+    // abnormal task termination (panic, early-return) still
+    // decrements the counter via stack unwind.
+    let _conn_guard = ConnGuard::new(state.connections_active.clone());
+
+    let max_frame_size = state.max_frame_size;
     let mut buf = BytesMut::with_capacity(4096);
 
     loop {
@@ -163,6 +172,11 @@ async fn handle_conn(mut socket: TcpStream, store: Store, max_frame_size: usize)
         loop {
             match Frame::parse(&buf[..]) {
                 Ok((frame, n)) => {
+                    // ADR-0007 §Q6: count every parsed frame, even
+                    // unknown commands / arity errors.  This matches
+                    // real Redis `total_commands_processed`.
+                    state.commands_total.fetch_add(1, Ordering::Relaxed);
+
                     // Dispatch frame → command (or arity-error Reply).
                     let reply = match from_frame(frame) {
                         Ok(cmd) => {
@@ -175,7 +189,7 @@ async fn handle_conn(mut socket: TcpStream, store: Store, max_frame_size: usize)
                             // level (StoreError is internal-only); map
                             // any future StoreError to a generic ERR
                             // reply rather than panicking.
-                            match store.execute(cmd) {
+                            match state.store.execute(cmd) {
                                 Ok(r) => r,
                                 Err(e) => redis_storage::Reply::Error(format!("ERR internal: {e}")),
                             }

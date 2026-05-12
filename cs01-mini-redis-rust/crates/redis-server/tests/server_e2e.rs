@@ -23,6 +23,7 @@ use std::time::Duration;
 
 use redis_server::server;
 use redis_server::server::DEFAULT_MAX_FRAME_SIZE;
+use redis_server::state::AppState;
 use redis_storage::Store;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -41,8 +42,8 @@ async fn spawn_server_with_limit(max_frame_size: usize) -> (u16, JoinHandle<std:
         .await
         .expect("bind 127.0.0.1:0");
     let port = listener.local_addr().expect("local_addr").port();
-    let store = Store::new();
-    let handle = tokio::spawn(async move { server::run_on(listener, store, max_frame_size).await });
+    let state = AppState::new(Store::new(), max_frame_size);
+    let handle = tokio::spawn(async move { server::run_on(listener, state).await });
     (port, handle)
 }
 

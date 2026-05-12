@@ -19,15 +19,20 @@ redis-protocol = { path = "../redis-protocol" }
 redis-storage = { path = "../redis-storage" }
 
 tokio.workspace = true
+tokio-stream.workspace = true
 axum.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+futures-util.workspace = true
 bytes.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 rust-embed.workspace = true
 clap.workspace = true
 anyhow.workspace = true
+
+[dev-dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["stream"] }
 
 [lints]
 workspace = true
