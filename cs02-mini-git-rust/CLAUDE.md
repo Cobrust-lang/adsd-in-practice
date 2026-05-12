@@ -43,6 +43,7 @@ git log  # 必须显示 mg 写的 commit
 **Wave M1**(object 层 + hash-object):
 1. SHA-1 hash 抽象 + `mg hash-object` / `cat-file` 两个 plumbing 命令
 2. Blob 对象读写
+3. 最小 `mg init` 只创建 `.mg/objects` object database;完整 HEAD/ref/index/commit 语义仍归 M3
 
 **Wave M2**(index + tree):
 3. Index 文件 reader/writer(对照 `git ls-files --stage` 输出)

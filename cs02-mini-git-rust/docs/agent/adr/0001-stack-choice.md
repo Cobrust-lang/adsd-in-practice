@@ -75,7 +75,7 @@ CS-02 是 git plumbing 实现。必须做选择:
 ## Done Criteria
 
 - [ ] Cargo.toml workspace 声明 sha1/sha2/flate2/clap/anyhow/thiserror
-- [ ] `mg-core::hash::sha1_hex(b"")` 跟 `git hash-object --stdin` 对空输入的 SHA 一致
+- [ ] `mg-core::hash::sha1_hex(b"")` 只验证原始 SHA-1;Git 对象 SHA 必须通过 `mg-core::object::hash(Kind::Blob, payload)` 验证
 - [ ] `mg hash-object hello.txt`(M1.1 后)跟 `git hash-object hello.txt` 输出一致
 
 ## Cross-references

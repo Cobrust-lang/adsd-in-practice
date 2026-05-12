@@ -55,7 +55,9 @@ pub fn hash(kind: Kind, payload: &[u8]) -> String {
 ///
 /// Returns IO error if `.mg/objects/` cannot be written.
 pub fn write_loose(_kind: Kind, _payload: &[u8], _mg_dir: &std::path::Path) -> Result<String> {
-    Err(crate::Error::InvalidObject("write_loose not yet implemented (M1.1)"))
+    Err(crate::Error::InvalidObject(
+        "write_loose not yet implemented (M1.1)",
+    ))
 }
 
 #[cfg(test)]
