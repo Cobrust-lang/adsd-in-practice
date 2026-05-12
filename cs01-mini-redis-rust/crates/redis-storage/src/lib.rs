@@ -30,7 +30,8 @@ pub enum StoreError {
 
 /// Top-level command enum (decoded from RESP `Array(Some(bulk*))`).
 ///
-/// Wave M1 — covers PING / GET / SET / DEL / EXISTS / INCR / DECR.
+/// Wave M1 — covers PING / GET / SET / DEL / EXISTS / INCR / DECR
+///            + ECHO / SELECT / QUIT (M1.3, ADR-0005).
 /// Wave M3 — adds SUBSCRIBE / PUBLISH / UNSUBSCRIBE.
 #[derive(Debug, Clone)]
 pub enum Command {
@@ -55,6 +56,19 @@ pub enum Command {
     Decr {
         key: String,
     },
+    /// `ECHO message` — returns `Bulk(Some(message))`.
+    Echo {
+        message: Vec<u8>,
+    },
+    /// `SELECT db` — accepts only `db == 0` in this single-DB build.
+    /// Non-zero index returns `Reply::Error("ERR DB index is out of range")`.
+    Select {
+        db: i64,
+    },
+    /// `QUIT` — server closes the socket after flushing the reply.
+    /// The store side returns `Reply::Ok`; the socket close is the
+    /// caller's (server crate) responsibility — see ADR-0005.
+    Quit,
 }
 
 /// Reply enum (encoded to RESP frame at the server boundary).
@@ -225,6 +239,26 @@ impl Store {
 
             Command::Incr { key } => Ok(Self::incr_by(&self.inner, key, 1)),
             Command::Decr { key } => Ok(Self::incr_by(&self.inner, key, -1)),
+
+            // ── M1.3 (ADR-0005) ──────────────────────────────────────────
+            // ECHO returns the message verbatim as a bulk string.
+            Command::Echo { message } => Ok(Reply::Bulk(Some(message))),
+
+            // SELECT db — single-DB build: only db 0 succeeds.  Real Redis
+            // wire string for the failure case is exactly
+            // "ERR DB index is out of range".
+            Command::Select { db } => {
+                if db == 0 {
+                    Ok(Reply::Ok)
+                } else {
+                    Ok(Reply::Error("ERR DB index is out of range".to_owned()))
+                }
+            }
+
+            // QUIT — the store side just returns Ok.  ADR-0005 makes the
+            // server crate responsible for closing the socket *after*
+            // flushing this reply.
+            Command::Quit => Ok(Reply::Ok),
         }
     }
 
