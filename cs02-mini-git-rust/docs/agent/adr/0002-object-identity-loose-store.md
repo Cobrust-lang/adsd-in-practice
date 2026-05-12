@@ -5,7 +5,7 @@ status: accepted
 date: 2026-05-13
 case: cs02-mini-git-rust
 supersedes: none
-last_verified_commit: pending
+last_verified_commit: 7de4224b092ab5f7738f779ae2ebb7d4e0c69dc8
 ---
 
 # ADR-0002: Object identity and loose object store compatibility
@@ -85,13 +85,13 @@ SHA-1 remains the v0.1.0 object ID algorithm. SHA-256 stays behind the hash abst
 
 ## Done Criteria
 
-- [ ] `Cargo.lock` is committed so `--locked` gates can run for cs02.
-- [ ] ADR-0001's raw-SHA vs Git-object-SHA wording is corrected.
-- [ ] `mg-core` has tests for blob object ID compatibility with Git fixtures, including empty payload and `hello`.
-- [ ] `mg hash-object <file>` matches `git hash-object <file>` on fixed fixtures and at least 1000 randomized file contents.
-- [ ] `mg hash-object -w <file>` writes a zlib loose object that real Git can read as the same blob.
-- [ ] `mg cat-file -p <sha>` can read mg-written and Git-written loose blob objects.
-- [ ] M1 gates pass: doc coverage, `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, `cargo test --workspace --locked`, and the Git oracle script for M1.
+- [x] `Cargo.lock` is committed so `--locked` gates can run for cs02.
+- [x] ADR-0001's raw-SHA vs Git-object-SHA wording is corrected.
+- [x] `mg-core` has tests for blob object ID compatibility with Git fixtures, including empty payload and `hello`.
+- [x] `mg hash-object <file>` matches `git hash-object <file>` on fixed fixtures and at least 1000 randomized file contents.
+- [x] `mg hash-object -w <file>` writes a zlib loose object that real Git can read as the same blob.
+- [x] `mg cat-file -p <sha>` can read mg-written and Git-written loose blob objects.
+- [x] M1 gates pass: doc coverage, `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, `cargo test --workspace --locked`, and the Git oracle script for M1.
 
 ## Cross-references
 
