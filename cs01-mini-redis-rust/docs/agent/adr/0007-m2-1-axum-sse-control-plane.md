@@ -5,7 +5,7 @@ status: accepted
 date: 2026-05-12
 case: cs01-mini-redis-rust
 supersedes: none
-last_verified_commit: pending
+last_verified_commit: 633b7aa
 ---
 
 # ADR-0007: M2.1 Axum HTTP control plane + SSE
