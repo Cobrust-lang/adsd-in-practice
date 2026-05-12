@@ -7,6 +7,7 @@
 	import { browser } from '$app/environment';
 	import { parsePubsubLine } from '$lib/api/sse';
 	import type { PubsubSnapshot } from '$lib/api/types';
+	import { apiPath } from '$lib/desktop';
 
 	let snapshot = $state<PubsubSnapshot | null>(null);
 	let lastUpdate = $state<number | null>(null);
@@ -14,7 +15,7 @@
 
 	$effect(() => {
 		if (!browser) return;
-		const es = new EventSource('/api/pubsub');
+		const es = new EventSource(apiPath('/api/pubsub'));
 
 		es.addEventListener('pubsub', (event) => {
 			const parsed = parsePubsubLine(event.data);

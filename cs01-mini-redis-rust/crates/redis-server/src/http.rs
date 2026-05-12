@@ -29,9 +29,13 @@ use std::time::Duration;
 
 use axum::Router;
 use axum::extract::State;
+use axum::http::header::{
+    ACCESS_CONTROL_ALLOW_HEADERS, ACCESS_CONTROL_ALLOW_ORIGIN, HeaderValue, ORIGIN,
+};
+use axum::http::{HeaderMap, Response};
+use axum::response::IntoResponse;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::routing::get;
-use futures_util::Stream;
 use futures_util::stream::StreamExt as _;
 use serde::Serialize;
 use tokio::net::TcpListener;
@@ -49,6 +53,23 @@ pub const KEYS_SAMPLE_LIMIT: usize = 100;
 /// Sampler tick interval (ADR-0007 §Q2).  1 Hz — dashboard refresh
 /// rate, not a hot path.
 pub const SAMPLER_INTERVAL: Duration = Duration::from_secs(1);
+
+/// Minimal CORS policy for the Tauri desktop shell (ADR-0013 M4.3).
+///
+/// The Tauri production WebView serves bundled assets from `tauri://localhost`
+/// or Tauri's platform workaround origins (`http(s)://tauri.localhost`) while
+/// the managed sidecar exposes `/api/*` from `127.0.0.1:6381`; browser CORS
+/// therefore still applies to SSE EventSource requests.  Reflect only known
+/// development and Tauri origins so arbitrary websites cannot read the loopback
+/// control plane.
+const LOOPBACK_DESKTOP_ALLOWED_CORS_ORIGINS: &[&str] = &[
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "tauri://localhost",
+    "http://tauri.localhost",
+    "https://tauri.localhost",
+];
+const LOOPBACK_DESKTOP_CORS_HEADERS: &str = "accept, cache-control";
 
 /// Per-key payload emitted on the `/api/keys` SSE stream.  Field
 /// names are LOCKED for the M2.2 frontend (ADR-0007 §Q5).
@@ -151,33 +172,55 @@ async fn sampler_loop(state: AppState) {
 ///
 /// Each frame's `data:` line is a JSON `StatsSnapshot`.
 async fn stats_sse(
+    headers: HeaderMap,
     State(state): State<AppState>,
-) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+) -> Response<axum::body::Body> {
     let rx = state.stats_tx.subscribe();
     // `Sse::new` requires `Stream<Item = Result<Event, _>>`; our
     // mapper produces a plain `Event` and we wrap with `Ok` here so
     // clippy's `unnecessary_wraps` stays happy inside the mapper.
     let stream = BroadcastStream::new(rx).map(|item| Ok::<_, Infallible>(map_stats_event(&item)));
-    Sse::new(stream).keep_alive(KeepAlive::default())
+    with_loopback_desktop_cors(&headers, Sse::new(stream).keep_alive(KeepAlive::default()))
 }
 
 /// `GET /api/keys` — SSE stream of `event: keys` frames (JSON array).
-async fn keys_sse(
-    State(state): State<AppState>,
-) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+async fn keys_sse(headers: HeaderMap, State(state): State<AppState>) -> Response<axum::body::Body> {
     let rx = state.keys_tx.subscribe();
     let stream = BroadcastStream::new(rx).map(|item| Ok::<_, Infallible>(map_keys_event(&item)));
-    Sse::new(stream).keep_alive(KeepAlive::default())
+    with_loopback_desktop_cors(&headers, Sse::new(stream).keep_alive(KeepAlive::default()))
 }
 
 /// `GET /api/pubsub` — SSE stream of `event: pubsub` frames (ADR-0009).
 /// Payload is `{"channels": [{"name": "...", "subscribers": N}, ...]}`.
 async fn pubsub_sse(
+    headers: HeaderMap,
     State(state): State<AppState>,
-) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+) -> Response<axum::body::Body> {
     let rx = state.pubsub_tx.subscribe();
     let stream = BroadcastStream::new(rx).map(|item| Ok::<_, Infallible>(map_pubsub_event(&item)));
-    Sse::new(stream).keep_alive(KeepAlive::default())
+    with_loopback_desktop_cors(&headers, Sse::new(stream).keep_alive(KeepAlive::default()))
+}
+
+fn with_loopback_desktop_cors(
+    request_headers: &HeaderMap,
+    response: impl IntoResponse,
+) -> Response<axum::body::Body> {
+    let mut response = response.into_response();
+    if let Some(origin) = request_headers
+        .get(ORIGIN)
+        .and_then(|origin| origin.to_str().ok())
+        .filter(|origin| LOOPBACK_DESKTOP_ALLOWED_CORS_ORIGINS.contains(origin))
+    {
+        response.headers_mut().insert(
+            ACCESS_CONTROL_ALLOW_ORIGIN,
+            HeaderValue::from_str(origin).expect("allowed CORS origin is a valid header value"),
+        );
+        response.headers_mut().insert(
+            ACCESS_CONTROL_ALLOW_HEADERS,
+            HeaderValue::from_static(LOOPBACK_DESKTOP_CORS_HEADERS),
+        );
+    }
+    response
 }
 
 /// Convert a `BroadcastStream` item into a SSE `Event`.  On
@@ -294,6 +337,55 @@ mod tests {
         // expiry task), so this is a `#[tokio::test]`.
         let state = AppState::new(Store::new(), 4096);
         let _r: Router = router(state);
+    }
+
+    #[tokio::test]
+    async fn stats_sse_reflects_allowed_loopback_cors_origin() {
+        let response = stats_sse_response_with_origin(Some("http://tauri.localhost")).await;
+
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        assert_eq!(
+            response.headers().get(ACCESS_CONTROL_ALLOW_ORIGIN),
+            Some(&HeaderValue::from_static("http://tauri.localhost"))
+        );
+    }
+
+    #[tokio::test]
+    async fn stats_sse_omits_cors_for_disallowed_origin() {
+        let response = stats_sse_response_with_origin(Some("https://evil.example")).await;
+
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        assert_eq!(response.headers().get(ACCESS_CONTROL_ALLOW_ORIGIN), None);
+    }
+
+    #[tokio::test]
+    async fn stats_sse_omits_cors_when_origin_absent() {
+        let response = stats_sse_response_with_origin(None).await;
+
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        assert_eq!(response.headers().get(ACCESS_CONTROL_ALLOW_ORIGIN), None);
+    }
+
+    async fn stats_sse_response_with_origin(
+        origin: Option<&str>,
+    ) -> axum::http::Response<axum::body::Body> {
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt as _;
+
+        let state = AppState::new(Store::new(), 4096);
+        let mut builder = Request::builder().uri("/api/stats");
+        if let Some(origin) = origin {
+            builder = builder.header(ORIGIN, origin);
+        }
+        router(state)
+            .oneshot(
+                builder
+                    .body(Body::empty())
+                    .expect("request builder succeeds"),
+            )
+            .await
+            .expect("router response succeeds")
     }
 
     // ── M3.1 (ADR-0009) Pub/Sub SSE wire shape ───────────────────────────

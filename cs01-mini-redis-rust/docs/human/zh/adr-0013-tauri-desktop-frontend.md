@@ -24,6 +24,20 @@ Tauri / Rust / pnpm 构建会产生大量 `target/`、bundle、cache。P9 实现
 - gate 默认轻量化;完整 Tauri bundle build 只在 release-readiness 跑一次。
 - 清理不需要保留的 `web/src-tauri/target/` / bundle output / vite cache。
 
-## 下一步
+## Phase 2 实现说明
 
-ADR-0013 是 Phase 1 strategic anchor。Phase 2 由 P9 实现 Tauri scaffold + sidecar lifecycle + gate/docs reconciliation,CTO 不直接写实现代码。
+M4.3 在 `web/src-tauri/` 增加 Tauri v2 app。桌面壳复用现有 SvelteKit 页面,默认启动 loopback `redis-server` sidecar:
+
+- RESP:`127.0.0.1:6380`
+- HTTP/SSE:`127.0.0.1:6381`
+- UI 失败状态:共享 layout 显示 Tauri sidecar banner,覆盖 `starting` / `running` / `failed` / `stopped`。
+- 开发覆盖:如果 sidecar binary 不在默认 Cargo target 路径,设置 `CS01_REDIS_SERVER_BIN=/absolute/path/to/redis-server`。
+
+`scripts/tauri-gate.sh` 默认轻量化:跑 SvelteKit check/test/build + 定向 `cargo check --manifest-path web/src-tauri/Cargo.toml`。完整 desktop bundle 需要显式设置 `CS01_TAURI_FULL_BUILD=1`,并记录前后磁盘状态。
+
+## M4.3 守闸补丁
+
+CTO 守闸退回后补两项 runtime hardening:
+
+- sidecar 不再把 stdout/stderr 接到未 drain 的 pipe,改为 `Stdio::null()`,避免长跑或异常日志填满 pipe buffer 阻塞 `redis-server`。
+- `/api/stats`、`/api/keys`、`/api/pubsub` SSE response 改为最小 CORS allowlist,不再使用 wildcard。允许的 dev browser origin 是 `http://localhost:5173` / `http://127.0.0.1:5173`;允许的 Tauri v2 app origin 是 `tauri://localhost` 以及 Tauri/wry documented workaround `http://tauri.localhost` / `https://tauri.localhost`。无 `Origin` 时不返回 CORS header;非 allowlist origin 不返回 `Access-Control-Allow-Origin`。这样保留 Tauri `EventSource(http://127.0.0.1:6381/api/*)` 能力,同时避免任意网页跨源读取本机 loopback control plane(尤其 `/api/keys`)。

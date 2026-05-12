@@ -2,6 +2,7 @@
 	import { browser } from '$app/environment';
 	import { parseStatsLine } from '$lib/api/sse';
 	import type { StatsEvent } from '$lib/api/types';
+	import { apiPath } from '$lib/desktop';
 	import { formatBytes, formatUptime } from '$lib/format';
 
 	// $state for the latest stats frame. Null means "haven't received
@@ -15,7 +16,7 @@
 	// against any pre-render path (SSR is disabled, but defensive).
 	$effect(() => {
 		if (!browser) return;
-		const es = new EventSource('/api/stats');
+		const es = new EventSource(apiPath('/api/stats'));
 
 		es.addEventListener('stats', (event) => {
 			const parsed = parseStatsLine(event.data);

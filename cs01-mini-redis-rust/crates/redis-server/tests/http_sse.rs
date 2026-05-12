@@ -119,7 +119,7 @@ fn parse_sse_frame(text: &str) -> (String, String) {
 
 // ── Done-criterion item: GET /api/stats emits 1Hz events ──────────────────
 
-#[tokio::test(flavor = "current_thread", start_paused = false)]
+#[tokio::test(flavor = "current_thread")]
 async fn stats_sse_emits_events_with_locked_schema() {
     let (port, _state, srv) = spawn_http().await;
     let mut stream = open_sse(port, "/api/stats").await;

@@ -24,6 +24,20 @@ Tauri / Rust / pnpm builds can create large `target/`, bundle, and cache directo
 - Keep default gates lightweight; run the full Tauri bundle build once for release readiness.
 - Clean unneeded `web/src-tauri/target/`, bundle output, and Vite caches.
 
-## Next
+## Phase 2 implementation note
 
-ADR-0013 is the Phase 1 strategic anchor. Phase 2 must be implemented by P9: Tauri scaffold, sidecar lifecycle, gate updates, and docs reconciliation. The CTO must not write implementation code directly.
+M4.3 adds a Tauri v2 app under `web/src-tauri/`. The desktop shell reuses the existing SvelteKit pages and starts a loopback `redis-server` sidecar by default:
+
+- RESP: `127.0.0.1:6380`
+- HTTP/SSE: `127.0.0.1:6381`
+- UI failure state: the shared layout shows a Tauri sidecar banner for `starting`, `running`, `failed`, and `stopped` states.
+- Development override: set `CS01_REDIS_SERVER_BIN=/absolute/path/to/redis-server` when the sidecar binary is not in the default Cargo target path.
+
+`scripts/tauri-gate.sh` is lightweight by default: SvelteKit check/test/build plus targeted `cargo check --manifest-path web/src-tauri/Cargo.toml`. Full desktop bundle creation is opt-in with `CS01_TAURI_FULL_BUILD=1` and must record disk usage before/after.
+
+## M4.3 gate-return patch
+
+The CTO gate return identified two runtime hardening gaps, both patched without changing the ADR-0013 architecture:
+
+- The sidecar no longer connects stdout/stderr to undrained pipes. `web/src-tauri/src/main.rs` uses `Stdio::null()` so long runs or abnormal logging cannot fill a pipe buffer and block `redis-server`.
+- `/api/stats`, `/api/keys`, and `/api/pubsub` SSE responses now use a minimal CORS allowlist instead of a wildcard. Allowed dev browser origins are `http://localhost:5173` / `http://127.0.0.1:5173`; allowed Tauri v2 app origins are `tauri://localhost` plus Tauri/wry's documented workaround origins `http://tauri.localhost` / `https://tauri.localhost`. Requests without `Origin` get no CORS header; non-allowlisted origins get no `Access-Control-Allow-Origin`. This preserves Tauri `EventSource(http://127.0.0.1:6381/api/*)` while preventing arbitrary websites from reading the user's loopback control plane, especially `/api/keys`.
