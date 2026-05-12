@@ -148,6 +148,64 @@ pub fn decode(encoded: &[u8]) -> Result<DecodedObject> {
     Ok(DecodedObject { kind, payload })
 }
 
+/// A regular-file tree entry for flat canonical tree objects.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TreeEntry {
+    pub mode: u32,
+    pub name: String,
+    pub object_id: [u8; 20],
+}
+
+impl TreeEntry {
+    /// Construct a tree entry from an index entry.
+    pub fn from_index_entry(entry: &crate::index::Entry) -> Result<Self> {
+        let name = entry
+            .path
+            .to_str()
+            .ok_or_else(|| Error::InvalidObject("tree paths must be UTF-8 in M2".to_owned()))?
+            .to_owned();
+        if name.is_empty() || name.contains('/') || name.as_bytes().contains(&0) {
+            return Err(Error::InvalidObject(
+                "M2 tree entries support only flat non-empty filenames".to_owned(),
+            ));
+        }
+        Ok(Self {
+            mode: entry.mode,
+            name,
+            object_id: entry.object_id,
+        })
+    }
+}
+
+/// Encode a flat canonical tree payload as `<mode> <name>\0<raw 20-byte oid>` entries.
+pub fn tree_payload(entries: &[TreeEntry]) -> Result<Vec<u8>> {
+    let mut sorted = entries.to_vec();
+    sorted.sort_by_key(tree_sort_key);
+
+    let mut out = Vec::new();
+    for entry in &sorted {
+        if !matches!(entry.mode, 0o100_644 | 0o100_755) {
+            return Err(Error::InvalidObject(format!(
+                "unsupported tree mode {mode:o}; M2 supports regular files only",
+                mode = entry.mode
+            )));
+        }
+        if entry.name.is_empty() || entry.name.contains('/') || entry.name.as_bytes().contains(&0) {
+            return Err(Error::InvalidObject(
+                "M2 tree entries support only flat non-empty filenames".to_owned(),
+            ));
+        }
+        out.extend_from_slice(format!("{:o} {}", entry.mode, entry.name).as_bytes());
+        out.push(0);
+        out.extend_from_slice(&entry.object_id);
+    }
+    Ok(out)
+}
+
+fn tree_sort_key(entry: &TreeEntry) -> Vec<u8> {
+    entry.name.as_bytes().to_vec()
+}
+
 fn validate_sha1_hex(sha: &str) -> Result<()> {
     if sha.len() != 40 || !sha.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return Err(Error::InvalidObject(
@@ -197,5 +255,19 @@ mod tests {
         assert_eq!(decoded.kind, Kind::Blob);
         assert_eq!(decoded.payload, b"hello");
         fs::remove_dir_all(&tmp).expect("test temp object dir should be removed");
+    }
+
+    #[test]
+    fn tree_payload_uses_raw_object_ids() {
+        let object_id = [0x11; 20];
+        let payload = tree_payload(&[TreeEntry {
+            mode: 0o100_644,
+            name: "a.txt".to_owned(),
+            object_id,
+        }])
+        .expect("tree payload should encode");
+        let mut expected = b"100644 a.txt\0".to_vec();
+        expected.extend_from_slice(&object_id);
+        assert_eq!(payload, expected);
     }
 }

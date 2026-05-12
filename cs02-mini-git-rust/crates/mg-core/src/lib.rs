@@ -6,6 +6,7 @@
 #![forbid(unsafe_code)]
 
 pub mod hash;
+pub mod index;
 pub mod object;
 
 use thiserror::Error;
@@ -16,6 +17,8 @@ pub enum Error {
     Io(#[from] std::io::Error),
     #[error("invalid object: {0}")]
     InvalidObject(String),
+    #[error("invalid index: {0}")]
+    InvalidIndex(String),
     #[error("unsupported object kind: {0}")]
     UnsupportedKind(String),
     #[error("hash mismatch: expected {expected}, got {actual}")]

@@ -91,7 +91,7 @@ mg log
 
 - ✅ M0 scaffold
 - ✅ M1 object model + `hash-object` / `cat-file`: Git-compatible blob identity, zlib loose-object IO, minimal `.mg/objects` init, and real Git oracle with 1000 randomized blobs
-- 🚧 M2 index + `add` / `write-tree`: Git index v2 + canonical tree compatibility per ADR-0003
+- ✅ M2 index + `add` / `write-tree`: Git index v2 + canonical flat-file tree compatibility per ADR-0003; nested paths and non-regular files fail clearly until a later wave
 - ⬜ M3 commit + log + repo discovery
 - ⬜ M4 v0.1.0 release + METHODOLOGY-STATUS
 
