@@ -7,19 +7,32 @@
 //! - `Arc<parking_lot::RwLock<Inner>>` for cheap clone + fast concurrent reads.
 //! - `hashbrown::HashMap<String, Entry>` as the underlying KV map.
 //! - `tokio::time::DelayQueue` for **active** TTL expiration (never lazy/on-read).
+//!
+//! M3.2 (ADR-0010) adds optional AOF persistence:
+//! - [`Store::with_aof`] constructs a store with a background `AofWriter`.
+//! - [`Store::execute`] writes a RESP-encoded copy of each *writable*
+//!   command to the AOF after the in-memory mutation succeeds.
+//! - [`Store::replay_from_path`] replays an existing AOF file into the
+//!   store *before* the AOF writer is wired in, so re-execution does
+//!   not duplicate the file.
 
 #![forbid(unsafe_code)]
 
+pub mod aof;
 pub mod glob;
 pub mod metrics;
 
+pub use aof::{AofWriter, FsyncPolicy, aof_encode};
 pub use metrics::{KeyInfo, StoreMetrics};
 
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use bytes::{Buf, BytesMut};
 use futures_util::StreamExt as _;
 use hashbrown::HashMap;
 use parking_lot::RwLock;
+use redis_protocol::{Frame, ProtocolError};
 use thiserror::Error;
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
@@ -234,6 +247,11 @@ pub const PUBSUB_BROADCAST_CAPACITY: usize = 128;
 ///
 /// `Store::new()` spawns a background tokio task that drives a
 /// `DelayQueue` for **active** TTL expiration (not lazy/on-read).
+///
+/// `Store::with_aof()` (M3.2, ADR-0010) additionally wires an
+/// [`AofWriter`]; once installed, every successful *writable* command
+/// (SET / DEL / EXPIRE / PERSIST / INCR / DECR) is RESP-encoded and
+/// appended to the AOF file via a non-blocking mpsc.
 #[derive(Clone)]
 pub struct Store {
     pub(crate) inner: Arc<RwLock<Inner>>,
@@ -241,6 +259,11 @@ pub struct Store {
     ttl_tx: tokio::sync::mpsc::UnboundedSender<(String, std::time::Duration)>,
     /// Handle kept so the runtime doesn't cancel the task prematurely.
     _expiry_task: Arc<JoinHandle<()>>,
+    /// Optional AOF writer.  `None` for the in-memory-only build
+    /// produced by [`Store::new`].  [`Store::with_aof`] sets it to
+    /// `Some(_)`.  Wrapped in `Arc` so cloning `Store` shares the
+    /// same writer task (no duplicate fsync intervals).
+    aof: Option<Arc<AofWriter>>,
 }
 
 impl Store {
@@ -287,16 +310,201 @@ impl Store {
             inner,
             ttl_tx,
             _expiry_task: Arc::new(handle),
+            aof: None,
         }
     }
 
+    /// Construct a `Store` *and* spawn an [`AofWriter`] bound to
+    /// `path` with the given fsync cadence.
+    ///
+    /// The AOF writer is installed **after** any replay step (see
+    /// [`Store::replay_from_path`] — the caller runs replay against a
+    /// store built via [`Store::new`] first, then upgrades to AOF via
+    /// this constructor before binding listeners).
+    ///
+    /// Convenience wrapper around [`Store::new`] + [`Store::attach_aof`]
+    /// for tests / callers that don't need to replay first.
+    ///
+    /// # Errors
+    /// Surfaces the underlying `io::Error` if the AOF file cannot be
+    /// opened for append (e.g. parent dir missing, permission denied).
+    pub async fn with_aof(path: PathBuf, fsync: FsyncPolicy) -> Result<Self, StoreError> {
+        Self::new().attach_aof(path, fsync).await
+    }
+
+    /// Request the AOF writer to flush its queue and `sync_data` the
+    /// file.  Returns immediately when the store has no AOF writer.
+    ///
+    /// Used by tests and by the (future, M4) graceful-shutdown path
+    /// to guarantee a durability anchor — the file on disk reflects
+    /// every command that has reached this point.
+    pub async fn aof_flush(&self) {
+        if let Some(writer) = self.aof.as_ref() {
+            writer.flush().await;
+        }
+    }
+
+    /// Graft an [`AofWriter`] onto an already-constructed `Store`,
+    /// preserving the existing in-memory map.
+    ///
+    /// Designed for the `main.rs` replay-then-bind flow:
+    /// `Store::new()` → `replay_from_path` → `attach_aof` →
+    /// `server::run`.  Doing replay against the no-AOF store first
+    /// guarantees the file isn't re-extended by the replayed
+    /// commands.
+    ///
+    /// # Errors
+    /// Same as [`Store::with_aof`].
+    pub async fn attach_aof(
+        mut self,
+        path: PathBuf,
+        fsync: FsyncPolicy,
+    ) -> Result<Self, StoreError> {
+        let writer = AofWriter::new(path, fsync).await?;
+        self.aof = Some(Arc::new(writer));
+        Ok(self)
+    }
+
+    /// Replay a RESP-encoded AOF file into the store.
+    ///
+    /// Iterates the file's bytes with [`Frame::parse`], converts each
+    /// `Array` frame into a [`Command`], and re-executes it via the
+    /// AOF-skipping path ([`Store::execute_no_aof`]) so the same file
+    /// is not re-extended during replay.
+    ///
+    /// Behaviour for malformed inputs:
+    /// - `Frame::parse` returning `Incomplete` at end-of-file is
+    ///   treated as a *truncated tail* — log a warning, return the
+    ///   number of complete commands replayed so far.  The next live
+    ///   write extends the file from its true length (`OpenOptions
+    ///   .append(true)` semantics; no rewrite-on-corruption in v0.1).
+    /// - `Frame::parse` returning `Invalid` mid-stream is also
+    ///   treated as a truncation: stop the replay at that offset,
+    ///   log a warn, return the count.  This matches the ADR-0010
+    ///   §"AOF 损坏 — warn-and-truncate" decision (the M3.2 finding
+    ///   `m3-2-aof-replay-corruption-handling.md` documents the
+    ///   trade-off vs refuse-to-start).
+    /// - A frame that *parses* but is not a writable command
+    ///   (because someone hand-edited the file to contain GET, say)
+    ///   is silently skipped — read-only commands have no effect on
+    ///   state anyway.
+    /// - Path that does not exist → return Ok(0) — same effect as
+    ///   replaying an empty AOF.  Callers (`main.rs`) check
+    ///   `Path::exists()` themselves but we tolerate the case here.
+    ///
+    /// Returns the number of commands successfully replayed.
+    ///
+    /// # Errors
+    /// Returns [`StoreError::Io`] only for fatal IO errors when
+    /// reading the file (permission denied, mid-read EOF on a real
+    /// disk failure).  Format errors do NOT propagate — they are
+    /// logged and treated as truncations per the policy above.
+    pub fn replay_from_path(&self, path: &Path) -> Result<usize, StoreError> {
+        if !path.exists() {
+            return Ok(0);
+        }
+        let bytes = std::fs::read(path)?;
+        let mut buf: BytesMut = BytesMut::with_capacity(bytes.len());
+        buf.extend_from_slice(&bytes);
+
+        let mut count: usize = 0;
+        loop {
+            match Frame::parse(&buf[..]) {
+                Ok((frame, n)) => {
+                    // Convert the frame to a command using the same
+                    // case-insensitive lookup the dispatch layer uses
+                    // — but the dispatch crate lives upstream of us.
+                    // Inline a tiny parser specialised for the 6
+                    // writable verbs (ADR-0010 §"writable command
+                    // set"); anything else is silently skipped so
+                    // hand-edited AOFs with GET / TYPE / etc. don't
+                    // crash replay.
+                    if let Some(cmd) = parse_writable_frame(&frame) {
+                        // execute_no_aof is infallible for the
+                        // writable subset (no IO, just map ops).
+                        // Errors here would mean a logic bug.
+                        let _ = self.execute_no_aof(cmd);
+                        count += 1;
+                    } else {
+                        tracing::debug!("AOF replay: skipping non-writable / unparseable frame");
+                    }
+                    buf.advance(n);
+                }
+                Err(ProtocolError::Incomplete) => {
+                    if !buf.is_empty() {
+                        tracing::warn!(
+                            tail_bytes = buf.len(),
+                            "AOF replay: truncated tail; ignoring remaining bytes"
+                        );
+                    }
+                    break;
+                }
+                Err(ProtocolError::Invalid(msg)) => {
+                    tracing::warn!(
+                        error = msg,
+                        tail_bytes = buf.len(),
+                        "AOF replay: malformed frame; stopping replay (warn-and-truncate)"
+                    );
+                    break;
+                }
+                Err(ProtocolError::Utf8(e)) => {
+                    tracing::warn!(
+                        error = %e,
+                        tail_bytes = buf.len(),
+                        "AOF replay: utf-8 error in frame; stopping replay (warn-and-truncate)"
+                    );
+                    break;
+                }
+            }
+        }
+        Ok(count)
+    }
+
     /// Execute a command and return a reply.
+    ///
+    /// Identical to [`Store::execute_no_aof`] plus an AOF append on
+    /// success for the *writable* subset (SET / DEL / EXPIRE /
+    /// PERSIST / INCR / DECR).  Read-only and Pub/Sub commands skip
+    /// the append.  When no AOF writer is configured (i.e.
+    /// [`Store::new`] build), this is a thin wrapper.
     ///
     /// # Errors
     ///
     /// Returns `StoreError` on internal IO or invariant violation.
     /// "Key not found" maps to `Reply::Bulk(None)`, not an error.
     pub fn execute(&self, cmd: Command) -> Result<Reply, StoreError> {
+        // Encode FIRST so we don't consume `cmd` before we can both
+        // run it and emit it.  `aof_encode` is allocation-light
+        // (one Vec<Frame> + a single to_bytes pass) and returns
+        // `None` immediately for non-writable arms — cost is
+        // negligible for the read-only hot path.
+        let encoded = self.aof.as_ref().and_then(|_| aof_encode(&cmd));
+
+        let reply = self.execute_no_aof(cmd)?;
+
+        // Only append if the in-memory mutation succeeded AND the
+        // reply is not an `Error` (e.g. INCR on a non-integer string
+        // returns Reply::Error and must NOT enter the AOF — replay
+        // would re-emit the same error and waste cycles).
+        if let (Some(writer), Some(bytes), false) =
+            (self.aof.as_ref(), encoded, matches!(reply, Reply::Error(_)))
+        {
+            writer.append(bytes);
+        }
+
+        Ok(reply)
+    }
+
+    /// Execute a command without AOF side-effects.
+    ///
+    /// Public-but-internal entry point used by [`Store::replay_from_path`]
+    /// so replay does not re-extend the file it just read.  Identical
+    /// semantics to [`Store::execute`] except the AOF append is skipped.
+    ///
+    /// # Errors
+    ///
+    /// Same shape as [`Store::execute`].
+    pub fn execute_no_aof(&self, cmd: Command) -> Result<Reply, StoreError> {
         match cmd {
             Command::Ping { message } => match message {
                 // `PING` with no message → `+PONG\r\n`.
@@ -644,6 +852,108 @@ impl Store {
 impl Default for Store {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Parse a RESP `Frame::Array` into one of the 6 writable Commands.
+///
+/// Returns `None` for anything that is not an Array of BulkStrings
+/// starting with a recognised writable verb.  This is deliberately
+/// independent of `redis-server::dispatch` — the storage crate must
+/// stay self-contained (cs01 CLAUDE.md §4 layer rule).  Wire shapes
+/// match `aof_encode`'s output, so replay is a true round-trip.
+///
+/// Hand-edited AOFs with unknown commands (or RESP shapes other than
+/// Array-of-Bulk) are skipped silently — see [`Store::replay_from_path`].
+fn parse_writable_frame(f: &Frame) -> Option<Command> {
+    let Frame::Array(Some(parts)) = f else {
+        return None;
+    };
+    let name = bulk_str(parts.first())?.to_ascii_uppercase();
+
+    match name.as_str() {
+        "SET" => {
+            // SET k v        → 3 parts
+            // SET k v EX n   → 5 parts
+            let key = bulk_str(parts.get(1))?;
+            let value = bulk_bytes(parts.get(2))?;
+            let ttl_secs = match parts.len() {
+                3 => None,
+                5 => {
+                    let opt = bulk_str(parts.get(3))?;
+                    if !opt.eq_ignore_ascii_case("EX") {
+                        return None;
+                    }
+                    let secs_str = bulk_str(parts.get(4))?;
+                    Some(secs_str.parse::<u64>().ok()?)
+                }
+                _ => return None,
+            };
+            Some(Command::Set {
+                key,
+                value,
+                ttl_secs,
+            })
+        }
+        "DEL" => {
+            if parts.len() < 2 {
+                return None;
+            }
+            let mut keys: Vec<String> = Vec::with_capacity(parts.len() - 1);
+            for p in &parts[1..] {
+                keys.push(bulk_str(Some(p))?);
+            }
+            Some(Command::Del { keys })
+        }
+        "EXPIRE" => {
+            if parts.len() != 3 {
+                return None;
+            }
+            let key = bulk_str(parts.get(1))?;
+            let seconds: i64 = bulk_str(parts.get(2))?.parse().ok()?;
+            Some(Command::Expire { key, seconds })
+        }
+        "PERSIST" => {
+            if parts.len() != 2 {
+                return None;
+            }
+            Some(Command::Persist {
+                key: bulk_str(parts.get(1))?,
+            })
+        }
+        "INCR" => {
+            if parts.len() != 2 {
+                return None;
+            }
+            Some(Command::Incr {
+                key: bulk_str(parts.get(1))?,
+            })
+        }
+        "DECR" => {
+            if parts.len() != 2 {
+                return None;
+            }
+            Some(Command::Decr {
+                key: bulk_str(parts.get(1))?,
+            })
+        }
+        _ => None,
+    }
+}
+
+/// Helper: pull a UTF-8 String out of a `Frame::BulkString(Some(...))`.
+fn bulk_str(f: Option<&Frame>) -> Option<String> {
+    match f {
+        Some(Frame::BulkString(Some(b))) => String::from_utf8(b.clone()).ok(),
+        _ => None,
+    }
+}
+
+/// Helper: pull raw bytes out of a `Frame::BulkString(Some(...))`.
+fn bulk_bytes(f: Option<&Frame>) -> Option<Vec<u8>> {
+    match f {
+        Some(Frame::BulkString(Some(b))) => Some(b.clone()),
+        _ => None,
     }
 }
 

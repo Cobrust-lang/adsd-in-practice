@@ -7,6 +7,8 @@ authors.workspace = true
 description = "In-memory KV + TTL + AOF persistence (cs01)"
 
 [dependencies]
+redis-protocol = { path = "../redis-protocol" }
+
 bytes.workspace = true
 futures-util.workspace = true
 hashbrown.workspace = true

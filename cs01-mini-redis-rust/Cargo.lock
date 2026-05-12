@@ -998,6 +998,7 @@ dependencies = [
  "futures-util",
  "hashbrown 0.15.5",
  "parking_lot",
+ "redis-protocol",
  "thiserror",
  "tokio",
  "tokio-util",

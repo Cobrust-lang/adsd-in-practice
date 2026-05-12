@@ -9,17 +9,32 @@
 //!
 //! Wave M2.1 (ADR-0007) — adds the Axum HTTP control plane on
 //! `--http-port` (default 6381).  Pass `--http-port 0` to disable;
-//! only the RESP listener will start.  `--aof` is still an M3
-//! placeholder, logged informationally.
+//! only the RESP listener will start.
+//!
+//! Wave M3.2 (ADR-0010) — wires AOF persistence.  When `--aof <path>`
+//! is supplied:
+//!
+//!   1. construct `Store::new()` (in-memory, no writer yet)
+//!   2. if the file exists, run `Store::replay_from_path(path)` —
+//!      this re-executes every recorded writable command into the
+//!      fresh map, **without** appending to the file
+//!   3. upgrade to `Store::with_aof(path, fsync)` so subsequent live
+//!      writes are appended to the same file
+//!   4. **then** bind RESP + HTTP listeners (replay-before-bind
+//!      guarantees clients never see partial state — ADR-0010
+//!      §"Replay 期间 accept" decision)
+//!
+//! When `--aof` is omitted the server is in-memory only (M3.1 behaviour).
 
 #![forbid(unsafe_code)]
 
 use std::net::{IpAddr, SocketAddr};
+use std::path::PathBuf;
 
 use clap::Parser;
 use redis_server::server::DEFAULT_MAX_FRAME_SIZE;
 use redis_server::state::AppState;
-use redis_storage::Store;
+use redis_storage::{FsyncPolicy, Store};
 
 #[derive(Parser, Debug)]
 #[command(name = "mini-redis-server", version, about = "ADSD CS-01 demo")]
@@ -37,9 +52,19 @@ struct Args {
     #[arg(long, default_value_t = 6381)]
     http_port: u16,
 
-    /// AOF file path (M3 placeholder — persistence disabled if absent)
+    /// AOF file path.  When set, the server replays the file on
+    /// start (if present) and appends every subsequent writable
+    /// command (SET / DEL / EXPIRE / PERSIST / INCR / DECR) to it
+    /// in RESP wire format.  Omit to disable persistence.
     #[arg(long)]
-    aof: Option<String>,
+    aof: Option<PathBuf>,
+
+    /// fsync cadence for the AOF writer.  One of `always` /
+    /// `everysec` / `no` (matches Redis' `appendfsync`).  Default
+    /// `everysec` (1 Hz background flush).  Ignored when `--aof`
+    /// is not provided.
+    #[arg(long, default_value = "everysec")]
+    aof_fsync: String,
 
     /// Per-connection buffer size ceiling (bytes).  When exceeded the
     /// connection is terminated with `-ERR Protocol error: frame too big`.
@@ -72,16 +97,56 @@ async fn main() -> anyhow::Result<()> {
         )
     })?;
 
+    let fsync_policy: FsyncPolicy = FsyncPolicy::parse(&args.aof_fsync)
+        .map_err(|e| anyhow::anyhow!("invalid --aof-fsync: {e}"))?;
+
     tracing::info!(
         port = args.port,
         bind = %args.bind,
         http_port = args.http_port,
         aof = ?args.aof,
+        aof_fsync = ?fsync_policy,
         max_frame_size,
-        "mini-redis-server starting (M2.1)"
+        "mini-redis-server starting (M3.2)"
     );
 
-    let store = Store::new();
+    // ── AOF replay-before-bind (ADR-0010 §"Replay 期间 accept") ──────────
+    let store = if let Some(aof_path) = args.aof.as_ref() {
+        // Run replay against a fresh AOF-less store first, so the
+        // re-executed commands don't extend the file we are reading.
+        let store = Store::new();
+        if aof_path.exists() {
+            match store.replay_from_path(aof_path) {
+                Ok(count) => tracing::info!(
+                    replayed = count,
+                    path = %aof_path.display(),
+                    "AOF replay complete"
+                ),
+                Err(e) => {
+                    tracing::error!(
+                        error = %e,
+                        path = %aof_path.display(),
+                        "AOF replay failed; aborting startup"
+                    );
+                    return Err(anyhow::anyhow!(e));
+                }
+            }
+        } else {
+            tracing::info!(
+                path = %aof_path.display(),
+                "AOF path does not yet exist — starting empty (will be created on first write)"
+            );
+        }
+        // Build a writer-equipped store and *copy* the replayed
+        // map into it.  `Store::with_aof` builds its own fresh
+        // `Inner`, so we replay AGAIN into the new store -- but
+        // since replay is idempotent for the writable subset, we
+        // instead seed the new store by re-using `store.inner`.
+        // Simpler: keep `store` and graft on an AofWriter directly.
+        store.attach_aof(aof_path.clone(), fsync_policy).await?
+    } else {
+        Store::new()
+    };
     let state = AppState::new(store, max_frame_size);
 
     // RESP listener — always on.
@@ -116,6 +181,13 @@ async fn main() -> anyhow::Result<()> {
     } else {
         resp_handle.await??;
     }
+
+    // M3.2 graceful shutdown: flush the AOF writer so every record
+    // accepted on the RESP path before ctrl_c is on disk by the time
+    // we return.  `aof_flush` is a no-op when AOF is disabled.
+    // This is the single durability anchor between the RESP listener
+    // exiting and the tokio runtime aborting our spawned tasks.
+    state.store.aof_flush().await;
 
     tracing::info!("mini-redis-server stopped cleanly");
     Ok(())
