@@ -34,23 +34,37 @@ use tokio::sync::broadcast;
 /// buffering frames a stalled client may never drain.
 pub const BROADCAST_CAPACITY: usize = 32;
 
+/// Default `--max-clients` ceiling (M4.1, ADR-0011 #2).
+///
+/// 1000 matches the SLO row "TCP 连接数 ≥ 1000" in cs01 CLAUDE.md §5
+/// and is well below the default Linux per-process fd limit (1024 →
+/// 1_048_576 depending on distro / `ulimit -n`).  Operators can raise
+/// it explicitly with `--max-clients` if their kernel allows.
+pub const DEFAULT_MAX_CLIENTS: usize = 1000;
+
 /// Shared state co-owned by the RESP listener, the HTTP listener,
 /// and the 1 Hz sampler task.
 ///
 /// All fields are individually `Arc`-shared / `Clone`-cheap so a full
 /// `AppState::clone()` is `O(N atomic ref-count increments)`.
 ///
-/// Field count grew to 8 in M3.1 (added `pubsub_tx`).  CLAUDE.md §3.1
-/// limits public structs to ≤7 fields without justification — the
-/// justification is that this struct is a *shared-state aggregate*
-/// (not a domain type) and every field is logically separate;
-/// folding them into sub-structs would just add indirection.
+/// Field count grew to 9 in M4.1 (added `max_clients`).  CLAUDE.md
+/// §3.1 limits public structs to ≤7 fields without justification —
+/// the justification is that this struct is a *shared-state
+/// aggregate* (not a domain type) and every field is logically
+/// separate; folding them into sub-structs would just add
+/// indirection.
 #[derive(Clone)]
 pub struct AppState {
     /// The in-memory store.  `Store: Clone` is itself an `Arc` bump.
     pub store: Store,
     /// `--max-frame-size` value — forwarded to per-conn RESP handler.
     pub max_frame_size: usize,
+    /// `--max-clients` ceiling (M4.1, ADR-0011 #2).  Checked in the
+    /// accept loop BEFORE spawning a per-conn task; over-the-ceiling
+    /// clients get a `-ERR max number of clients reached\r\n` reply
+    /// and immediate disconnect.
+    pub max_clients: usize,
     /// Number of active RESP connections.  See [`ConnGuard`].
     pub connections_active: Arc<AtomicU64>,
     /// Cumulative number of RESP frames parsed (any outcome).
@@ -71,19 +85,28 @@ pub struct AppState {
 
 impl AppState {
     /// Construct a fresh state bound to `store` with `max_frame_size`
-    /// forwarded to the RESP listener.
+    /// forwarded to the RESP listener.  Uses [`DEFAULT_MAX_CLIENTS`]
+    /// as the connection ceiling.
     ///
     /// Spins up the broadcast channels (capacity [`BROADCAST_CAPACITY`])
     /// but does NOT spawn the sampler — that's `http::run`'s job so
     /// tests can construct `AppState` standalone.
     #[must_use]
     pub fn new(store: Store, max_frame_size: usize) -> Self {
+        Self::new_with_limits(store, max_frame_size, DEFAULT_MAX_CLIENTS)
+    }
+
+    /// Variant of [`AppState::new`] that lets callers (`main.rs` /
+    /// the max-clients e2e tests) override the connection ceiling.
+    #[must_use]
+    pub fn new_with_limits(store: Store, max_frame_size: usize, max_clients: usize) -> Self {
         let (stats_tx, _) = broadcast::channel(BROADCAST_CAPACITY);
         let (keys_tx, _) = broadcast::channel(BROADCAST_CAPACITY);
         let (pubsub_tx, _) = broadcast::channel(BROADCAST_CAPACITY);
         Self {
             store,
             max_frame_size,
+            max_clients,
             connections_active: Arc::new(AtomicU64::new(0)),
             commands_total: Arc::new(AtomicU64::new(0)),
             started: Instant::now(),

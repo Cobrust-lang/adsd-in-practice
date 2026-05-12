@@ -31,8 +31,8 @@ async fn metrics_empty_store_is_zero() {
 #[tokio::test]
 async fn metrics_count_and_bytes_after_set() {
     let s = Store::new();
-    set_plain(&s, "foo", b"bar");
-    set_plain(&s, "name", b"alice");
+    set_plain(&s, "foo", b"bar").await;
+    set_plain(&s, "name", b"alice").await;
 
     let m = s.metrics();
     assert_eq!(m.key_count, 2);
@@ -43,14 +43,15 @@ async fn metrics_count_and_bytes_after_set() {
 #[tokio::test]
 async fn metrics_decrements_after_del() {
     let s = Store::new();
-    set_plain(&s, "a", b"x");
-    set_plain(&s, "b", b"yy");
-    set_plain(&s, "c", b"zzz");
+    set_plain(&s, "a", b"x").await;
+    set_plain(&s, "b", b"yy").await;
+    set_plain(&s, "c", b"zzz").await;
 
     let r = s
         .execute(Command::Del {
             keys: vec!["a".into(), "b".into()],
         })
+        .await
         .expect("del");
     assert_eq!(r, Reply::Integer(2));
 
@@ -67,8 +68,8 @@ async fn metrics_skips_logically_expired_entries() {
     // `server_e2e::set_ex_then_expiry`.  This is the single sleep
     // allowed under "last resort".
     let s = Store::new();
-    set_plain(&s, "perm", b"keep");
-    set_with_ttl(&s, "tmp", b"gone", 1);
+    set_plain(&s, "perm", b"keep").await;
+    set_with_ttl(&s, "tmp", b"gone", 1).await;
 
     // Immediately: 2 keys, 8 bytes.
     let m0 = s.metrics();
@@ -96,7 +97,7 @@ async fn sample_keys_empty_store_returns_empty() {
 #[tokio::test]
 async fn sample_keys_zero_limit_returns_empty() {
     let s = Store::new();
-    set_plain(&s, "foo", b"bar");
+    set_plain(&s, "foo", b"bar").await;
     let out = s.sample_keys(0);
     assert!(out.is_empty());
 }
@@ -104,9 +105,9 @@ async fn sample_keys_zero_limit_returns_empty() {
 #[tokio::test]
 async fn sample_keys_lists_under_limit_in_full() {
     let s = Store::new();
-    set_plain(&s, "a", b"1");
-    set_plain(&s, "b", b"22");
-    set_plain(&s, "c", b"333");
+    set_plain(&s, "a", b"1").await;
+    set_plain(&s, "b", b"22").await;
+    set_plain(&s, "c", b"333").await;
 
     let out = s.sample_keys(100);
     assert_eq!(out.len(), 3);
@@ -125,7 +126,7 @@ async fn sample_keys_lists_under_limit_in_full() {
 async fn sample_keys_truncates_at_limit() {
     let s = Store::new();
     for i in 0..200_u32 {
-        set_plain(&s, &format!("k{i}"), b"v");
+        set_plain(&s, &format!("k{i}"), b"v").await;
     }
     let out = s.sample_keys(100);
     assert_eq!(out.len(), 100);
@@ -134,7 +135,7 @@ async fn sample_keys_truncates_at_limit() {
 #[tokio::test]
 async fn sample_keys_reports_positive_ttl() {
     let s = Store::new();
-    set_with_ttl(&s, "ttlkey", b"v", 42);
+    set_with_ttl(&s, "ttlkey", b"v", 42).await;
 
     let out = s.sample_keys(10);
     assert_eq!(out.len(), 1);
@@ -154,8 +155,8 @@ async fn sample_keys_reports_positive_ttl() {
 #[tokio::test]
 async fn sample_keys_skips_expired() {
     let s = Store::new();
-    set_plain(&s, "perm", b"keep");
-    set_with_ttl(&s, "tmp", b"gone", 1);
+    set_plain(&s, "perm", b"keep").await;
+    set_with_ttl(&s, "tmp", b"gone", 1).await;
 
     tokio::time::sleep(Duration::from_millis(1100)).await;
 
@@ -182,8 +183,8 @@ async fn sample_keys_does_not_sort_deterministically() {
     let s1 = Store::new();
     let s2 = Store::new();
     for k in ["a", "b", "c", "d", "e"] {
-        set_plain(&s1, k, b"v");
-        set_plain(&s2, k, b"v");
+        set_plain(&s1, k, b"v").await;
+        set_plain(&s2, k, b"v").await;
     }
     let o1: HashSet<String> = s1.sample_keys(10).into_iter().map(|k| k.key).collect();
     let o2: HashSet<String> = s2.sample_keys(10).into_iter().map(|k| k.key).collect();
@@ -193,24 +194,26 @@ async fn sample_keys_does_not_sort_deterministically() {
 
 // ── helpers ─────────────────────────────────────────────────────────────
 
-fn set_plain(s: &Store, key: &str, value: &[u8]) {
+async fn set_plain(s: &Store, key: &str, value: &[u8]) {
     let r = s
         .execute(Command::Set {
             key: key.into(),
             value: value.to_vec(),
             ttl_secs: None,
         })
+        .await
         .expect("set");
     assert_eq!(r, Reply::Ok);
 }
 
-fn set_with_ttl(s: &Store, key: &str, value: &[u8], ttl_secs: u64) {
+async fn set_with_ttl(s: &Store, key: &str, value: &[u8], ttl_secs: u64) {
     let r = s
         .execute(Command::Set {
             key: key.into(),
             value: value.to_vec(),
             ttl_secs: Some(ttl_secs),
         })
+        .await
         .expect("set with ttl");
     assert_eq!(r, Reply::Ok);
 }

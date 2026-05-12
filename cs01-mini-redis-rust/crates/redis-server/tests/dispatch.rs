@@ -467,3 +467,46 @@ fn dispatch_publish_binary_payload_round_trips() {
         other => panic!("expected Publish, got {other:?}"),
     }
 }
+
+// ── M4.1 (ADR-0011 §#10) — `parse_set` strict arity ─────────────────────────
+
+#[test]
+fn parse_set_rejects_trailing_token() {
+    // `SET k v EX 60 GARBAGE` — 6 parts, must reject with verbatim
+    // `ERR syntax error` to match real Redis.  M3.2 accepted this
+    // (parts.len() >= 5 with trailing tokens silently ignored).
+    let frame = parse(
+        b"*6\r\n$3\r\nSET\r\n$1\r\nk\r\n$1\r\nv\r\n$2\r\nEX\r\n$2\r\n60\r\n$7\r\nGARBAGE\r\n",
+    );
+    let err = from_frame(frame).expect_err("SET with trailing token must error");
+    assert_eq!(err, Reply::Error("ERR syntax error".to_owned()));
+}
+
+#[test]
+fn parse_set_rejects_more_than_one_trailing_token() {
+    // 7 parts: `SET k v EX 60 X Y` — same error.
+    let frame = parse(
+        b"*7\r\n$3\r\nSET\r\n$1\r\nk\r\n$1\r\nv\r\n$2\r\nEX\r\n$2\r\n60\r\n$1\r\nX\r\n$1\r\nY\r\n",
+    );
+    let err = from_frame(frame).expect_err("SET with two trailing tokens must error");
+    assert_eq!(err, Reply::Error("ERR syntax error".to_owned()));
+}
+
+#[test]
+fn parse_set_accepts_canonical_ex_form() {
+    // `SET k v EX 60` — 5 parts, ttl_secs = Some(60).
+    let frame = parse(b"*5\r\n$3\r\nSET\r\n$1\r\nk\r\n$1\r\nv\r\n$2\r\nEX\r\n$2\r\n60\r\n");
+    let cmd = from_frame(frame).expect("SET k v EX 60 must parse");
+    match cmd {
+        Command::Set {
+            key,
+            value,
+            ttl_secs,
+        } => {
+            assert_eq!(key, "k");
+            assert_eq!(value, b"v");
+            assert_eq!(ttl_secs, Some(60));
+        }
+        other => panic!("expected Set, got {other:?}"),
+    }
+}
