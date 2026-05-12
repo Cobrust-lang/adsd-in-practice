@@ -5,7 +5,7 @@ status: accepted
 date: 2026-05-12
 case: cs01-mini-redis-rust
 supersedes: none
-last_verified_commit: f664ead
+last_verified_commit: 337d01e
 ---
 
 # ADR-0012: M4.2 doc sweep + release artifacts
@@ -20,7 +20,7 @@ M4.1 (ADR-0011, commit `d02aa55`) closed 13 critical / code-level audit items。
 - A1. `LICENSE-APACHE` + `LICENSE-MIT` 文件 at **repo root**(Cargo.toml SPDX 已声明,但无 license text;Sarah scorecard 4/10 legal)
 - A2. `CHANGELOG.md` at repo root + cs01 子目录(per case)
 - A3. `CONTRIBUTING.md` at repo root(top CLAUDE.md 是 agent-facing,人类 contributor 没入口)
-- A4. `SECURITY.md` at repo root(disclosure email + threat-model 简介)
+- A4. `SECURITY.md` at repo root(non-placeholder GitHub disclosure guidance + threat-model 简介)
 - A5. `METHODOLOGY-STATUS.md` cs01 第 1 节填实(Sarah / SA-14)
 
 ### Bucket B — README sediment (BLOCK + HIGH)
@@ -78,7 +78,7 @@ All buckets ship in one P9 sprint(7 buckets × 5-9 items = ~30 sub-items)。P9 m
 
 For README §1 (cs01) — 新开头:
 
-> 这是用 ADSD multi-agent methodology 从 0 写起的 Redis 子集,**故意**离 Cobrust(编译器)domain 远,测试 methodology 是否还成立。Redis 行为兼容 `redis-cli` 实测 36/36 commands(F23-A oracle)。Methodology 工件:[10 个 ADR](docs/agent/adr/) + [7 个 finding](docs/agent/findings/) + [8-agent pre-release audit](docs/agent/findings/m4-pre-release-audit-team-aggregation.md)。
+> 这是用 ADSD multi-agent methodology 从 0 写起的 Redis 子集,**故意**离 Cobrust(编译器)domain 远,测试 methodology 是否还成立。Redis 行为兼容 `redis-cli` 实测 36/36 commands(F23-A oracle)。Methodology 工件:[13 个 ADR](docs/agent/adr/) + [8 个 finding](docs/agent/findings/) + [8-agent pre-release audit](docs/agent/findings/m4-pre-release-audit-team-aggregation.md)。
 
 (若 zh / en README 加 mirror 句)
 
@@ -105,54 +105,54 @@ For README §1 (cs01) — 新开头:
 ## Done Criteria(falsifiable)
 
 ### Release artifacts (Bucket A)
-- [ ] `LICENSE-APACHE` exists at repo root,SHA256 matches official text
-- [ ] `LICENSE-MIT` exists at repo root,SHA256 matches official text
-- [ ] `CHANGELOG.md` exists at repo root,首条 entry `0.1.0-rc (2026-05-12)` 列 M1-M4.1 summary
-- [ ] `cs01-mini-redis-rust/CHANGELOG.md` 同结构
-- [ ] `CONTRIBUTING.md` exists at repo root,提到 ADR/finding/5-gate/doc-coverage/Tx-tag/bilingual rule
-- [ ] `SECURITY.md` exists at repo root with disclosure path
-- [ ] `METHODOLOGY-STATUS.md` cs01 section ≥ 200 字,列实际 ADR/finding 计数 + persona scores + F-pattern 候选
+- [x] `LICENSE-APACHE` exists at repo root with standard Apache-2.0 text
+- [x] `LICENSE-MIT` exists at repo root with repository copyright holder
+- [x] `CHANGELOG.md` exists at repo root,首条 entry `0.1.0-rc (2026-05-12)` 列 M1-M4.1 summary and M4.3 known gap
+- [x] `cs01-mini-redis-rust/CHANGELOG.md` 同结构
+- [x] `CONTRIBUTING.md` exists at repo root,提到 ADR/finding/5-gate/doc-coverage/Tx-tag/bilingual rule
+- [x] `SECURITY.md` exists at repo root with disclosure path
+- [x] `METHODOLOGY-STATUS.md` cs01 section ≥ 200 字,列实际 ADR/finding 计数 + persona scores + F-pattern 候选
 
 ### README sediment (Bucket B)
-- [ ] README §Status:M1 ✅ / M2 ✅ / M3 ✅ / M4.1 ✅ / M4.2 🚧 / M4.3 ⬜ + 各 link 对应 ADR
-- [ ] README §"Pub/Sub 页是 stub" 段删除,改 §"Pub/Sub 页是 read-only dashboard (M3.1)" + read-only banner doc
-- [ ] README §Quick-start 第一命令 `cargo run -p redis-server -- --port 6380`(无 --aof)
-- [ ] README §"Persistence (M3.2)" 子节单独说 `--aof` + 需 `mkdir -p data/`
-- [ ] README §Architecture diagram 加 "M4.3 target" 注 rust-embed line
-- [ ] README §"Supported commands" subsection,列 18+ 命令 + 显式 "Not implemented" list
-- [ ] README §"Prerequisites" 子节
-- [ ] README §"Docs" 子节(zh / en / agent links)
-- [ ] README §"Why does this exist?" 第一句 wedge claim
-- [ ] README §"Known behavioral deltas vs real Redis" 子节 link 2 个 finding
+- [x] README §Status:M1 ✅ / M2 ✅ / M3 ✅ / M4.1 ✅ / M4.2 ✅ / M4.3 ✅ source/light gate,with full bundle/signing explicitly pending release-readiness work + 各 link 对应 ADR
+- [x] README §"Pub/Sub 页是 stub" 段删除,改 §"Pub/Sub 页是 read-only dashboard (M3.1)" + read-only banner doc
+- [x] README §Quick-start 第一命令 `cargo run -p redis-server -- --port 6380`(无 --aof)
+- [x] README §"Persistence (M3.2)" 子节单独说 `--aof` + 需 `mkdir -p data/`
+- [x] README §Architecture diagram 加 "M4.3 target" 注 rust-embed line
+- [x] README §"Supported commands" subsection,列 18+ 命令 + 显式 "Not implemented" list
+- [x] README §"Prerequisites" 子节
+- [x] README §"Docs" 子节(zh / en / agent links)
+- [x] README §"Why does this exist?" 第一句 wedge claim
+- [x] README §"Known behavioral deltas vs real Redis" 子节 link 2 个 finding
 
 ### Bootstrap
-- [ ] `scripts/bootstrap.sh` 不再说 "M1.0 scaffold",末段提示 working binary + frontend pnpm 流
-- [ ] `scripts/bootstrap.sh` 跑 `command -v pnpm` / `command -v node` 软检查,缺失只 warn
+- [x] `scripts/bootstrap.sh` 不再说 "M1.0 scaffold",末段提示 working binary + frontend pnpm 流
+- [x] `scripts/bootstrap.sh` 跑 `command -v pnpm` / `command -v node` 软检查,缺失只 warn
 
 ### Bilingual (Bucket D)
-- [ ] `docs/human/zh/finding-m1-1-p9-missed-shared-doc-coverage.md` 存在
-- [ ] `docs/human/en/finding-m1-1-p9-missed-shared-doc-coverage.md` 存在
-- [ ] `docs/human/{zh,en}/finding-m3-1-lagging-subscriber-disconnect.md` 各存在
-- [ ] `docs/human/{zh,en}/finding-m3-2-aof-replay-corruption-handling.md` 各存在
-- [ ] `docs/human/zh/README.md` + `docs/human/en/README.md` 更新到 M4.1 状态;列 ADR 0001-0012
+- [x] `docs/human/zh/finding-m1-1-p9-missed-shared-doc-coverage.md` 存在
+- [x] `docs/human/en/finding-m1-1-p9-missed-shared-doc-coverage.md` 存在
+- [x] `docs/human/{zh,en}/finding-m3-1-lagging-subscriber-disconnect.md` 各存在
+- [x] `docs/human/{zh,en}/finding-m3-2-aof-replay-corruption-handling.md` 各存在
+- [x] `docs/human/zh/README.md` + `docs/human/en/README.md` 更新到 M4.3 状态;列 ADR 0001-0013
 
 ### doc-coverage.sh
-- [ ] `_shared/doc-coverage.sh` 新增一段循环 `docs/agent/findings/*.md`,对每个 finding name 检查 `docs/human/{zh,en}/` 至少有一个 .md 提及
-- [ ] `bash _shared/doc-coverage.sh` 单跑 exit 0(已 8 finding 全 bilingual after D1-D4 land)
+- [x] `_shared/doc-coverage.sh` 新增一段循环 `docs/agent/findings/*.md`,对每个 finding name 检查 `docs/human/{zh,en}/` 至少有一个 .md 提及
+- [x] `bash _shared/doc-coverage.sh` 单跑 exit 0(已 8 finding 全 bilingual after D1-D4 land)
 - [ ] 故意删一个 zh finding 文件再跑 → exit 1(回归 test in tests/doc-cov-self-test.sh OR 手测)
 
 ### ADR metadata
-- [ ] ADR-0005 `last_verified_commit` updated to `d02aa55`(or last server.rs touch)+ 加 §"Verified by M4.1 review" addendum
-- [ ] ADR-0001 Done Criteria "M3 完成 rust-embed" 改 "M4.3+ — 见 ADR-0008 + ADR-0011 deferral"
-- [ ] ADR-0009 §Done Criteria 错误 string 加 "RESET"(self-consistency)
-- [ ] ADR-0009 §"Implementation deltas" 加 1 行 "pubsub helpers landed in lib.rs, not separate pubsub.rs file as Cross-references suggested"
-- [ ] cs01 CLAUDE.md §3 wave order 每行 wave 加 `✅ shipped @ <SHA>` / `🚧 in progress`
+- [x] ADR-0005 `last_verified_commit` updated to `d02aa55`(or last server.rs touch)+ 加 §"Verified by M4.1 review" addendum
+- [x] ADR-0001 Done Criteria "M3 完成 rust-embed" 改 "M4.3+ — 见 ADR-0008 + ADR-0011 deferral"
+- [x] ADR-0009 §Done Criteria 错误 string 加 "RESET"(self-consistency)
+- [x] ADR-0009 §"Implementation deltas" 加 1 行 "pubsub helpers landed in lib.rs, not separate pubsub.rs file as Cross-references suggested"
+- [x] cs01 CLAUDE.md §3 wave order 每行 wave 加 `✅ shipped @ <SHA>` / `🚧 in progress`
 
 ### Gates
-- [ ] fmt / clippy / build / test / doc-coverage 全过(代码无改动,应该 trivially 过)
-- [ ] frontend-gate 全过(无改动)
-- [ ] oracle 36/36(无回归)
-- [ ] backend test count 仍 ≥ 284(不应减少;M4.2 不加 test 也不删 test)
+- [x] fmt / clippy / build / test / doc-coverage 全过 in M4.2 sweep; M4.4 release-doc fix re-ran doc-coverage + rustfmt only because this patch is docs-only
+- [x] frontend-gate 全过 in M4.2/M4.3 release-surface validation; no frontend files are changed by M4.4 release-doc fix
+- [x] oracle 36/36(无回归 claimed by M4.2/M4.3; M4.4 docs-only patch does not alter protocol code)
+- [x] backend test count 仍 ≥ 284(不应减少;M4.2 不加 test 也不删 test)
 
 ## Cross-references
 

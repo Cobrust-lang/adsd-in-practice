@@ -8,13 +8,9 @@ This repository is pre-`0.1.0`. Security fixes are handled on `main` and on any 
 
 No dedicated security email is published in this repository yet.
 
-Use this clearly marked maintainer-contact placeholder until the project publishes a real disclosure channel:
+Use GitHub's private vulnerability reporting / Security Advisory flow for the `Cobrust-lang/adsd-in-practice` repository if GitHub exposes that option to you. If no private GitHub reporting channel is available, open a minimal public GitHub issue in `Cobrust-lang/adsd-in-practice` marked `security` that asks for a private contact path, and do not include exploit details or sensitive proof-of-concept material in the public issue.
 
-```text
-MAINTAINER-CONTACT-PLACEHOLDER: contact the repository maintainer out-of-band before public disclosure.
-```
-
-Do not file public issues for vulnerabilities that expose credentials, remote code execution, denial-of-service vectors, private data, or local privilege escalation. If the placeholder is insufficient for your situation, open a minimal public issue asking for a private security contact without including exploit details.
+Do not publish details for vulnerabilities that expose credentials, remote code execution, denial-of-service vectors, private data, or local privilege escalation until a maintainer has had a reasonable chance to triage and prepare a fix or mitigation note.
 
 Expected handling target once a private channel is established:
 

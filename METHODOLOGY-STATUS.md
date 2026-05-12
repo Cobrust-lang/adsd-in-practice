@@ -21,14 +21,14 @@
 
 ---
 
-## CS-01 mini-redis-rust(0.1.0-rc / M4.2)
+## CS-01 mini-redis-rust(0.1.0-rc / M4.3 source-light gate; M4.4 release-readiness pending)
 
-CS-01 是 ADSD 在 Cobrust 之外的第一个强验证 case:网络协议 + async server + persistence + web/desktop release surface。到 M4.2 committed main,agent ADR 共有 **13** 份(0001-0013),agent finding 共有 **7** 份,并已触发一次 **8-agent pre-release audit**(4 internal + 3 persona + 1 deep-source-read)。审计原始结果约 80 条,去重约 50 条:BLOCK 1,HIGH cross-validated 12,HIGH single-agent 14,MED 20,LOW 13。Persona 分数/结论:Mei 4/5,Aleksandr 4/5,Sarah 36/100(WATCH-FROM-DISTANCE,主要卡 release/legal/security/bus-factor)。
+CS-01 是 ADSD 在 Cobrust 之外的第一个强验证 case:网络协议 + async server + persistence + web/desktop release surface。到 M4.3 committed main,agent ADR 共有 **13** 份(0001-0013),agent finding 共有 **8** 份,并已触发一次 **8-agent pre-release audit**(4 internal + 3 persona + 1 deep-source-read)。审计原始结果约 80 条,去重约 50 条:BLOCK 1,HIGH cross-validated 12,HIGH single-agent 14,MED 20,LOW 13。Persona 分数/结论:Mei 4/5,Aleksandr 4/5,Sarah 36/100(WATCH-FROM-DISTANCE,主要卡 release/legal/security/bus-factor)。M4.3 已提交 Tauri source/lightweight gate;full Tauri bundle/signing/sidecar staging 仍是 M4.4 release-readiness work,不在此处伪装成已完成。
 
 | 实践 | 评价 | 改造成本 | 证据 | 备注 |
 |---|---|---|---|---|
 | ADR-driven 决策捕获 | ✅ 完全有效 | 约 6 h | 13 个 ADR 覆盖 stack/RESP/storage/TCP/M2/M3/M4.1/M4.2/M4.3;ADR-0011/0012 直接从审计 finding 拆 sprint | 两阶段 SOP 有效,但 ADR 写完后必须 cross-check local CLAUDE.md |
-| Finding-driven 失败 | ✅ 完全有效 | 约 3 h | 7 个 finding;TTL oracle bug、CTO 写代码、lagging subscriber、AOF corruption、8-agent audit 都留下证据 | 负面结果没有隐藏,成为 M4.1/M4.2 backlog 来源 |
+| Finding-driven 失败 | ✅ 完全有效 | 约 3 h | 8 个 finding;TTL oracle bug、CTO 写代码、lagging subscriber、AOF corruption、8-agent audit、Tauri sidecar packaging blocker 都留下证据 | 负面结果没有隐藏,成为 M4.1/M4.2/M4.3/M4.4 backlog 来源 |
 | 双语 zh/en doc | 🟡 半失效 | 约 4 h | M4 audit CV-11 抓到 3 个 finding 缺双语摘要;M4.2 扩 doc-coverage gate 修复 | 规则有效,但没有 tooling enforcement 时会沉积 |
 | Wave-based commit | ✅ 完全有效 | 约 1 h | M1-M4.1 commit message 均用 Wave 标记;Tx tag 帮助从 audit 回溯责任面 | 快速 wave merge 会放大 README/metadata sediment,需 M4 sweep |
 | 5-gate CI | ✅ 完全有效 | 约 2 h | fmt/clippy/build/test/doc-coverage 在每个 Rust sprint 守闸;M4.1 critical fixes 后继续跑 | 前端 gate 成为 case-local 第 6 gate |
@@ -91,7 +91,7 @@ CS-01 是 ADSD 在 Cobrust 之外的第一个强验证 case:网络协议 + async
 
 ## 写作 checklist(每个 case 完成时)
 
-- [x] CS-01 7 个表格行已填(M4.2 rc)
+- [x] CS-01 7 个表格行已填(M4.3 rc; finding count reconciled to 8)
 - [x] CS-01 改造成本使用 sprint/commit 时间级粗估,非精确 stopwatch;最终 v0.1.0 可重测
 - [x] CS-01 证据有具体 ADR/finding 文件引用
 - [x] CS-01 新 F-pattern 有 high-specificity 描述

@@ -5,7 +5,7 @@ status: accepted
 date: 2026-05-13
 case: cs01-mini-redis-rust
 supersedes: ADR-0008 rust-embed release target; ADR-0012 M4.3 rust-embed-only framing
-last_verified_commit: 6f04a12
+last_verified_commit: 337d01e
 ---
 
 # ADR-0013: Tauri desktop frontend becomes the primary release surface
@@ -120,31 +120,31 @@ Rationale:
 
 ### Phase 1 anchor
 
-- [ ] ADR-0013 exists in `docs/agent/adr/` and is listed in the ADR roster.
-- [ ] zh/en human ADR abstracts exist and reference `0013-tauri-desktop-frontend.md`.
-- [ ] `cs01-mini-redis-rust/CLAUDE.md` no longer describes rust-embed as the M4 primary release target.
-- [ ] `cs01-mini-redis-rust/README.md` marks Tauri desktop as the M4.3 target and does not claim rust-embed is already shipped.
+- [x] ADR-0013 exists in `docs/agent/adr/` and is listed in the ADR roster.
+- [x] zh/en human ADR abstracts exist and reference `0013-tauri-desktop-frontend.md`.
+- [x] `cs01-mini-redis-rust/CLAUDE.md` no longer describes rust-embed as the M4 primary release target.
+- [x] `cs01-mini-redis-rust/README.md` marks Tauri desktop as the M4.3 target and does not claim rust-embed is already shipped.
 
 ### Phase 2 implementation
 
-- [ ] A Tauri v2 app is added under `web/` or another ADR-justified path.
-- [ ] The app renders the existing SvelteKit dashboard/keys/pubsub pages inside the desktop shell.
-- [ ] The app starts/stops a loopback `redis-server` sidecar or documents a clearly safer equivalent if P9 proves sidecar packaging is infeasible.
-- [ ] Sidecar startup failures are visible in the UI, not hidden in logs only.
-- [ ] The RESP port and HTTP control-plane port are local-only by default.
-- [ ] Browser dev mode still works.
-- [ ] `scripts/frontend-gate.sh` is updated or a new `scripts/tauri-gate.sh` is added with lightweight default checks and an explicit opt-in heavy bundle step.
-- [ ] `.gitignore` covers Tauri build artifacts (`src-tauri/target/`, bundle output, Vite/Tauri caches) without hiding source files.
-- [ ] README documents both dev mode and Tauri desktop mode.
-- [ ] M4.2 release docs are reconciled: rust-embed wording becomes deferred/optional, not the v0.1.0 blocker.
+- [x] A Tauri v2 app is added under `web/` or another ADR-justified path.
+- [x] The app renders the existing SvelteKit dashboard/keys/pubsub pages inside the desktop shell.
+- [x] The app starts/stops a loopback `redis-server` sidecar in local/dev mode; bundle-time sidecar staging remains explicit release-readiness work tracked by finding `m4-3-tauri-sidecar-packaging-blocker.md`.
+- [x] Sidecar startup failures are visible in the UI, not hidden in logs only.
+- [x] The RESP port and HTTP control-plane port are local-only by default.
+- [x] Browser dev mode still works.
+- [x] `scripts/frontend-gate.sh` is updated or a new `scripts/tauri-gate.sh` is added with lightweight default checks and an explicit opt-in heavy bundle step.
+- [x] `.gitignore` covers Tauri build artifacts (`src-tauri/target/`, bundle output, Vite/Tauri caches) without hiding source files.
+- [x] README documents both dev mode and Tauri desktop mode.
+- [x] M4.2 release docs are reconciled: rust-embed wording becomes deferred/optional, not the v0.1.0 blocker.
 
 ### Gates
 
-- [ ] Rust fmt/clippy/build/test/doc-coverage pass before merge.
-- [ ] Frontend gate pass before merge.
-- [ ] Tauri lightweight gate pass before merge.
-- [ ] Full Tauri bundle build is run only once for release readiness, with disk usage before/after recorded.
-- [ ] Oracle compatibility remains non-regressed because the sidecar binary is the same `redis-server`.
+- [x] Rust fmt/clippy/build/test/doc-coverage pass before merge.
+- [x] Frontend gate pass before merge.
+- [x] Tauri lightweight gate pass before merge.
+- [ ] Full Tauri bundle build is run only once for release readiness, with disk usage before/after recorded; M4.4 still tracks this as pending full bundle/signing verification.
+- [x] Oracle compatibility remains non-regressed because the sidecar binary is the same `redis-server`.
 
 ## Cross-references
 
@@ -171,6 +171,10 @@ CTO gate review found two production-runtime risks in the first M4.3 implementat
 
 1. The Tauri sidecar no longer pipes stdout/stderr without readers. `web/src-tauri/src/main.rs` now sends sidecar stdin/stdout/stderr to `Stdio::null()`, so long-running logs cannot fill an undrained pipe buffer and block the backend process.
 2. The Axum HTTP/SSE control plane now attaches allowlisted CORS headers to `/api/stats`, `/api/keys`, and `/api/pubsub`. Tauri production loads bundled assets from Tauri's app origin while `EventSource(apiPath(...))` connects to `http://127.0.0.1:6381`; the server therefore treats those loopback SSE endpoints as cross-origin browser requests. The selected allowlist is `http://localhost:5173` and `http://127.0.0.1:5173` for dev browser mode, plus Tauri v2's documented app origins: `tauri://localhost` on non-Windows/non-Android platforms and the wry workaround origins `http://tauri.localhost` / `https://tauri.localhost` on Windows/Android or HTTPS app mode. If the request has no `Origin`, no CORS header is emitted; if it has a non-allowlisted `Origin`, no `Access-Control-Allow-Origin` is emitted. This avoids the rejected wildcard posture where an arbitrary website could read the user's loopback control plane (notably `/api/keys`) while preserving the loopback-only listener boundary from ADR-0011/ADR-0013.
+
+## M4.4 full-bundle gate dependency alignment note
+
+The first M4.4 full-bundle release gate failed after all lightweight checks passed because Tauri CLI rejected mixed minor versions: Rust `tauri` resolved to `2.11.1` while npm `@tauri-apps/api` remained `2.9.0` and `@tauri-apps/cli` remained `2.9.5`. The release-safe fix is explicit pinning instead of floating Tauri majors: `@tauri-apps/api = 2.11.0`, `@tauri-apps/cli = 2.11.0`, `tauri = 2.11.1`, and `tauri-build = 2.6.1` (latest matching Tauri v2 build crate line). This keeps runtime packages on Tauri 2.11 and prevents future lock regeneration from drifting back to a 2.9 npm / 2.11 Rust mismatch.
 
 ## Notes
 

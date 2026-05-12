@@ -3,10 +3,11 @@ finding: m4-pre-release-audit-team-aggregation
 date: 2026-05-12
 case: cs01-mini-redis-rust
 severity: P1
+status: partial-closed
 specificity: high
 related_adr: 0001-0010
 related_f: F1 (sediment), F8 (marketing), F17 (KPI), F18 (self-review), F23-A (oracle), F24 (primitive)
-last_verified_commit: bf4307c
+last_verified_commit: 337d01e
 audit_team: 8-agent self-applied (4 internal + 3 persona + 1 deep-source-read)
 ---
 
@@ -106,6 +107,10 @@ Each agent had 30-60 min budget, structured `[*-AUDIT-COMPLETION]` report format
 - Deep-source LOW-1: `Frame::Integer` encoder 评论说 "itoa-style" 实际 `.to_string()` 分配(comment lie)
 - Aleksandr concern #4: `aof_encode` 在 `Reply::Error` 路径上仍编码 → 浪费
 
+## Current status (M4.4 release checklist reconciliation)
+
+`partial-closed`: M4.1 closed the critical security / AOF / parser / dispatch / Pub/Sub items; M4.2 closed the release-doc/artifact and bilingual-ledger blockers; M4.3 moved the release surface to Tauri source + managed sidecar lightweight gate. This aggregate finding remains historically intact, but its original "fix in progress" language is no longer the live status. The remaining release-readiness risk is not this aggregate backlog; it is tracked separately by `m4-3-tauri-sidecar-packaging-blocker.md` and the M4.4 full-bundle/signing/sidecar-staging work.
+
 ## Conclusion
 
 **Audit team delivered ~80 raw findings,~50 unique,12 cross-validated HIGH,14 single-agent HIGH,20 MED,13 LOW**。
@@ -119,6 +124,8 @@ Each agent had 30-60 min budget, structured `[*-AUDIT-COMPLETION]` report format
 - **Persona endorsement asymmetry**:Mei 4/5,Aleksandr 4/5,Sarah 36/100(WATCH-FROM-DISTANCE)— 同一份代码,不同 user 类不同分。预期:Mei 代表"被 wedge 故事 sold",Aleksandr 代表"代码层认可 scope",Sarah 代表"production-adoption 评估"。**全过 = 真广 appeal;Sarah 低分预期内**(她要求 v1.0 + cs02 ship + LICENSE + bus factor > 1,这是 6 个 case 完成后才解锁的)
 
 ## Fix / Mitigation
+
+M4 remediation has now been split across ADR-0011 (M4.1 critical fixes), ADR-0012 (M4.2 doc sweep + release artifacts), and ADR-0013 (M4.3 Tauri release surface). The original proposed split is preserved below as historical audit-to-backlog evidence; items that later became true are not deleted from the raw finding.
 
 提议 M4 拆 ADR-0011 (M4.1 critical fixes) + ADR-0012 (M4.2 doc sweep + release artifacts) 两个 wave:
 

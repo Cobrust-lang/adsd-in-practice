@@ -35,6 +35,8 @@ M4.3 adds a Tauri v2 app under `web/src-tauri/`. The desktop shell reuses the ex
 
 `scripts/tauri-gate.sh` is lightweight by default: SvelteKit check/test/build plus targeted `cargo check --manifest-path web/src-tauri/Cargo.toml`. Full desktop bundle creation is opt-in with `CS01_TAURI_FULL_BUILD=1` and must record disk usage before/after.
 
+The M4.4 full-bundle gate failed on an npm Tauri 2.9.x versus Rust `tauri` 2.11.1 minor-version mismatch; the fix explicitly pins `@tauri-apps/api`/`@tauri-apps/cli` to 2.11.0, `tauri` to 2.11.1, and `tauri-build` to 2.6.1 so lockfile regeneration cannot drift back.
+
 ## M4.3 gate-return patch
 
 The CTO gate return identified two runtime hardening gaps, both patched without changing the ADR-0013 architecture:

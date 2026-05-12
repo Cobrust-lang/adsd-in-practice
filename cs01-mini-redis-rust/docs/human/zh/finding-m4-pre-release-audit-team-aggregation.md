@@ -42,4 +42,4 @@ Wave M3 关闭后,按 ADSD §"Self-applied multi-agent audit" + §"LLM-simulated
 
 ## 状态
 
-`P1`,fix in progress(M4.1/M4.2 即将 spike)。**ADSD upstream `case-study/` 候选**:第一次 quantified 8-agent audit team leverage(≈ 6-8× single CTO 自审)。
+`P1`,partial-closed:M4.1 已关闭 critical code/security 项,M4.2 已关闭 release-doc/artifact 阻塞,M4.3 已提交 Tauri source + lightweight gate。剩余 full Tauri bundle/signing/sidecar staging 风险由 `m4-3-tauri-sidecar-packaging-blocker.md` / M4.4 跟踪。**ADSD upstream `case-study/` 候选**:第一次 quantified 8-agent audit team leverage(≈ 6-8× single CTO 自审)。
