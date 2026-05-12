@@ -182,8 +182,33 @@ for cmd in "${FIXTURES[@]}"; do
     fi
 done
 
+# ── M3.1 (ADR-0009) Pub/Sub fixtures ─────────────────────────────────────────
+# The Python harness re-uses the running oracle docker + our server.
+# It does its own connection checks and degrades to "skipped" if the
+# `redis` Python package is missing — so this never hard-fails CI.
+#
+# If the harness reports a divergence (exit 1) we propagate it.
+
+PUBSUB_SCRIPT="$ROOT/tests/oracle_pubsub.py"
+if command -v python3 >/dev/null 2>&1 && [[ -f "$PUBSUB_SCRIPT" ]]; then
+    echo
+    echo "oracle.sh: running pubsub harness (oracle_pubsub.py)"
+    export CS01_ORACLE_PORT CS01_OUR_PORT
+    CS01_ORACLE_PORT="$ORACLE_PORT" \
+    CS01_OUR_PORT="$OUR_PORT" \
+        python3 "$PUBSUB_SCRIPT"
+    pubsub_rc=$?
+    if [[ "$pubsub_rc" -ne 0 ]]; then
+        echo "oracle.sh: pubsub harness failed (rc=$pubsub_rc)"
+        exit 1
+    fi
+else
+    echo "oracle.sh: python3 not on PATH or oracle_pubsub.py missing — pubsub fixtures skipped"
+fi
+
 # ── Summary ──────────────────────────────────────────────────────────────────
 
 echo
-echo "oracle.sh: $total / $total commands matched real Redis"
+echo "oracle.sh: $total / $total RESP commands matched real Redis"
+echo "oracle.sh: pubsub harness completed (see lines above)"
 exit 0
