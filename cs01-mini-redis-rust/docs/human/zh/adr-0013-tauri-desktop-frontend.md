@@ -24,6 +24,13 @@ Tauri / Rust / pnpm 构建会产生大量 `target/`、bundle、cache。P9 实现
 - gate 默认轻量化;完整 Tauri bundle build 只在 release-readiness 跑一次。
 - 清理不需要保留的 `web/src-tauri/target/` / bundle output / vite cache。
 
-## 下一步
+## Phase 2 实现说明
 
-ADR-0013 是 Phase 1 strategic anchor。Phase 2 由 P9 实现 Tauri scaffold + sidecar lifecycle + gate/docs reconciliation,CTO 不直接写实现代码。
+M4.3 在 `web/src-tauri/` 增加 Tauri v2 app。桌面壳复用现有 SvelteKit 页面,默认启动 loopback `redis-server` sidecar:
+
+- RESP:`127.0.0.1:6380`
+- HTTP/SSE:`127.0.0.1:6381`
+- UI 失败状态:共享 layout 显示 Tauri sidecar banner,覆盖 `starting` / `running` / `failed` / `stopped`。
+- 开发覆盖:如果 sidecar binary 不在默认 Cargo target 路径,设置 `CS01_REDIS_SERVER_BIN=/absolute/path/to/redis-server`。
+
+`scripts/tauri-gate.sh` 默认轻量化:跑 SvelteKit check/test/build + 定向 `cargo check --manifest-path web/src-tauri/Cargo.toml`。完整 desktop bundle 需要显式设置 `CS01_TAURI_FULL_BUILD=1`,并记录前后磁盘状态。

@@ -13,6 +13,9 @@
     "dev": "vite dev",
     "build": "vite build",
     "preview": "vite preview",
+    "tauri": "tauri",
+    "tauri:dev": "tauri dev",
+    "tauri:check": "cargo check --manifest-path src-tauri/Cargo.toml",
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
     "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
     "test": "vitest"
@@ -22,6 +25,8 @@
     "@sveltejs/kit": "2.59.1",
     "@sveltejs/vite-plugin-svelte": "7.1.2",
     "@tailwindcss/vite": "4.3.0",
+    "@tauri-apps/api": "2.9.0",
+    "@tauri-apps/cli": "2.9.5",
     "@types/node": "25.7.0",
     "daisyui": "5.5.19",
     "jsdom": "29.1.1",

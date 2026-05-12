@@ -102,6 +102,42 @@ bash scripts/frontend-gate.sh
 
 Required tooling:`node ≥ 20`, `pnpm ≥ 9`(本机 `node v25.9.0` + `pnpm 10.33.0` 已 verified)。
 
+## Tauri desktop mode (M4.3)
+
+ADR-0013 的 v0.1.0 release surface 是 `web/src-tauri/` 下的 Tauri v2 desktop shell。它复用同一份 SvelteKit/Vite UI,并尝试管理本地 `redis-server` sidecar:
+
+- RESP 端口固定为 `127.0.0.1:6380`。
+- HTTP/SSE control plane 固定为 `127.0.0.1:6381`。
+- 桌面 UI 会显示 sidecar 状态 banner:starting / running / failed / stopped;缺少 sidecar binary、端口冲突或启动超时不会静默失败。
+- Browser dev mode 保持不变:`pnpm dev` 仍通过 Vite proxy 访问 `/api → http://localhost:6381`。
+
+轻量桌面开发流程:
+
+```bash
+# 先构建 sidecar binary；Tauri dev 会自动查找 target/debug/redis-server
+cargo build -p redis-server
+
+cd web
+pnpm install
+pnpm tauri:dev
+```
+
+如果 `redis-server` 不在默认位置,可显式指定:
+
+```bash
+CS01_REDIS_SERVER_BIN=/absolute/path/to/redis-server pnpm tauri:dev
+```
+
+轻量 gate 默认不跑完整 bundle,避免在低磁盘环境反复创建 `src-tauri/target/` / bundle artifacts:
+
+```bash
+bash scripts/tauri-gate.sh
+# release-readiness 才跑完整 bundle:
+CS01_TAURI_FULL_BUILD=1 bash scripts/tauri-gate.sh
+```
+
+当前 M4.3 状态:已提交 Tauri source/config 和 local-dev sidecar lifecycle。完整签名/ notarization / platform bundle 验证不在默认 gate 中;release 前必须单独记录 `df -h .` before/after 并跑一次 full bundle。
+
 ## Architecture
 
 ```

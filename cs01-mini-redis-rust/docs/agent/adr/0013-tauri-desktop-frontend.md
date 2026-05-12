@@ -154,7 +154,19 @@ Rationale:
 - Finding `m4-pre-release-audit-team-aggregation.md`: Sarah/Mei public-readiness pressure remains the source for release-artifact cleanup.
 - Local constitution: `cs01-mini-redis-rust/CLAUDE.md` §3 / §4 must follow this ADR to avoid constitution-vs-ADR drift.
 
+## Phase 2 implementation note (M4.3 P9)
+
+Implementation adds `web/src-tauri/` as a Tauri v2 app without refactoring `redis-server` into an in-process library. The desktop shell reuses the SvelteKit/Vite frontend source and manages a loopback sidecar:
+
+- RESP sidecar endpoint:`127.0.0.1:6380`.
+- HTTP/SSE control plane:`127.0.0.1:6381`.
+- Sidecar discovery order: `CS01_REDIS_SERVER_BIN`, packaged resource `bin/redis-server`, then local dev Cargo target paths.
+- Startup failures are visible through a Tauri command consumed by the Svelte layout banner; missing binary, port reuse, and readiness timeout are not silent.
+- Browser dev mode remains supported because non-Tauri runtime still uses relative `/api/*` paths and Vite proxy.
+- `scripts/tauri-gate.sh` is lightweight by default and only runs the full Tauri bundle when `CS01_TAURI_FULL_BUILD=1` is set.
+
 ## Notes
 
 - P9 implementation prompt must explicitly forbid heavy Tauri bundle loops under low disk conditions.
-- If Tauri sidecar packaging turns out to require platform-specific signing/notarization work, record that as a finding and keep v0.1.0 as an unsigned local-dev desktop preview rather than inventing fake release readiness.
+- Full signing/notarization/platform bundle readiness remains unclaimed until a release-readiness run records disk usage and executes `CS01_TAURI_FULL_BUILD=1 bash scripts/tauri-gate.sh`.
+- If Tauri sidecar packaging turns out to require additional platform-specific signing/notarization work, record that as a finding and keep v0.1.0 as an unsigned local-dev desktop preview rather than inventing fake release readiness.
