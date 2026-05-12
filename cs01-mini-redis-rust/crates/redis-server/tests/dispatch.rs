@@ -352,3 +352,118 @@ fn dispatch_keys_wrong_arity_is_error() {
     let err = from_frame(frame).expect_err("KEYS with no pattern must error");
     assert!(matches!(&err, Reply::Error(_)));
 }
+
+// ── M3.1 (ADR-0009) Pub/Sub parsers ───────────────────────────────────────────
+
+#[test]
+fn dispatch_subscribe_single_channel() {
+    let frame = parse(b"*2\r\n$9\r\nSUBSCRIBE\r\n$4\r\nnews\r\n");
+    let cmd = from_frame(frame).expect("SUBSCRIBE news must parse");
+    match cmd {
+        Command::Subscribe { channels } => assert_eq!(channels, vec!["news".to_owned()]),
+        other => panic!("expected Subscribe, got {other:?}"),
+    }
+}
+
+#[test]
+fn dispatch_subscribe_multiple_channels() {
+    let frame = parse(b"*4\r\n$9\r\nSUBSCRIBE\r\n$1\r\na\r\n$1\r\nb\r\n$1\r\nc\r\n");
+    let cmd = from_frame(frame).expect("SUBSCRIBE a b c must parse");
+    match cmd {
+        Command::Subscribe { channels } => {
+            assert_eq!(
+                channels,
+                vec!["a".to_owned(), "b".to_owned(), "c".to_owned()]
+            );
+        }
+        other => panic!("expected Subscribe, got {other:?}"),
+    }
+}
+
+#[test]
+fn dispatch_subscribe_case_insensitive() {
+    let frame = parse(b"*2\r\n$9\r\nsubscribe\r\n$4\r\nnews\r\n");
+    let cmd = from_frame(frame).expect("lowercase subscribe must parse");
+    assert!(matches!(cmd, Command::Subscribe { .. }));
+}
+
+#[test]
+fn dispatch_subscribe_no_args_is_error() {
+    let frame = parse(b"*1\r\n$9\r\nSUBSCRIBE\r\n");
+    let err = from_frame(frame).expect_err("SUBSCRIBE with no channels must error");
+    let Reply::Error(msg) = err else {
+        panic!("expected Reply::Error");
+    };
+    assert!(msg.contains("'subscribe'"), "got msg: {msg}");
+}
+
+#[test]
+fn dispatch_unsubscribe_no_args_means_all() {
+    let frame = parse(b"*1\r\n$11\r\nUNSUBSCRIBE\r\n");
+    let cmd = from_frame(frame).expect("UNSUBSCRIBE with no args must parse");
+    match cmd {
+        Command::Unsubscribe { channels } => {
+            assert!(
+                channels.is_empty(),
+                "expected empty (unsub-all), got {channels:?}"
+            );
+        }
+        other => panic!("expected Unsubscribe, got {other:?}"),
+    }
+}
+
+#[test]
+fn dispatch_unsubscribe_specific_channels() {
+    let frame = parse(b"*3\r\n$11\r\nUNSUBSCRIBE\r\n$1\r\na\r\n$1\r\nb\r\n");
+    let cmd = from_frame(frame).expect("UNSUBSCRIBE a b must parse");
+    match cmd {
+        Command::Unsubscribe { channels } => {
+            assert_eq!(channels, vec!["a".to_owned(), "b".to_owned()]);
+        }
+        other => panic!("expected Unsubscribe, got {other:?}"),
+    }
+}
+
+#[test]
+fn dispatch_publish_round_trip() {
+    let frame = parse(b"*3\r\n$7\r\nPUBLISH\r\n$4\r\nnews\r\n$5\r\nhello\r\n");
+    let cmd = from_frame(frame).expect("PUBLISH news hello must parse");
+    match cmd {
+        Command::Publish { channel, message } => {
+            assert_eq!(channel, "news");
+            assert_eq!(message, b"hello".to_vec());
+        }
+        other => panic!("expected Publish, got {other:?}"),
+    }
+}
+
+#[test]
+fn dispatch_publish_case_insensitive() {
+    let frame = parse(b"*3\r\n$7\r\npublish\r\n$4\r\nnews\r\n$5\r\nhello\r\n");
+    let cmd = from_frame(frame).expect("lowercase publish must parse");
+    assert!(matches!(cmd, Command::Publish { .. }));
+}
+
+#[test]
+fn dispatch_publish_wrong_arity_is_error() {
+    let frame = parse(b"*2\r\n$7\r\nPUBLISH\r\n$4\r\nnews\r\n");
+    let err = from_frame(frame).expect_err("PUBLISH without message must error");
+    let Reply::Error(msg) = err else {
+        panic!("expected Reply::Error");
+    };
+    assert!(msg.contains("'publish'"), "got msg: {msg}");
+}
+
+#[test]
+fn dispatch_publish_binary_payload_round_trips() {
+    // Payload with NUL byte + non-utf8 (0xff).  PUBLISH must preserve raw bytes.
+    let frame = parse(b"*3\r\n$7\r\nPUBLISH\r\n$1\r\nx\r\n$3\r\n\x00\xff\x7f\r\n");
+    let cmd = from_frame(frame).expect("PUBLISH with binary payload must parse");
+    match cmd {
+        Command::Publish { channel, message } => {
+            assert_eq!(channel, "x");
+            assert_eq!(message, vec![0x00, 0xff, 0x7f]);
+        }
+        other => panic!("expected Publish, got {other:?}"),
+    }
+}

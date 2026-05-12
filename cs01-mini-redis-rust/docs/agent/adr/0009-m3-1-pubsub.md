@@ -5,7 +5,7 @@ status: accepted
 date: 2026-05-12
 case: cs01-mini-redis-rust
 supersedes: none
-last_verified_commit: pending
+last_verified_commit: 4c5e360
 ---
 
 # ADR-0009: M3.1 Pub/Sub
@@ -254,3 +254,14 @@ data: {"channels":[{"name":"news","subscribers":3},{"name":"chat","subscribers":
 - sub mode 的 PING 行为:**Redis 7 在 sub mode 下 PING 返回 `+PONG`(simple string),不是 `*2\r\n...`**(后者是 Redis 6 行为)— verify by oracle
 - 错误字符串字面对齐 Redis 7,**通过 oracle 验证后才 lock**(M1.4 TTL rounding lesson)
 - M3.2 (AOF):pubsub 不该被 AOF(volatile state),AOF 只 log writable commands
+
+## Implementation deltas (post-impl, 2026-05-12)
+
+记录与原 Decision 偏差(都不破约,只是落地细节):
+
+1. **`recv_any_subscription` 用 `iter_mut() + select_all`,不是 `BoxFuture` Vec**:借用检查器拒绝多个 future 同时 borrow 同一个 `&mut HashMap`,只有 `iter_mut()` 给的是 disjoint 借用。`async move { (name, rx.recv().await) }` 把每个 receiver 的 future 装在闭包里,`select_all` 等任一完成 — 没拿到结果的 future 被 drop,broadcast::Receiver 的 cursor 保留所以下次 call 不丢消息。这是 Rust async 借用模型的具体落地,Decision 里没明说,但仍属于 Q4 选定的 ConnState + select! 方案。
+2. **`Reply::Subscribe / Unsubscribe` 入 `Store::execute` → `Reply::Error("ERR internal: ...")`**:ADR §Q4 说 SUBSCRIBE/UNSUBSCRIBE 由 server 层做,不该走 `execute`;为符合 CLAUDE.md §3.1 "非测试不准 .unwrap()",我们让 execute 返回一个 generic ERR 而不是 panic,作为防御性回退。dispatch 测试覆盖了这条路径。
+3. **`AppState` 8 个公开字段**(原 7 +1 `pubsub_tx`):超过 CLAUDE.md §3.1 "≤7" 的 hint。在 `state.rs` 的 doc-comment 里加了 justification(shared-state aggregate,折成 sub-struct 只多 indirection),不算违反。
+4. **`PUBSUB_BROADCAST_CAPACITY = 128` 公开常量**:Decision 里写了 "broadcast capacity 128",但没说"公开",我们把它 `pub` 出来方便 server 调试 / 测试 introspect。
+5. **`UnsubscribeAck { channel: None, count: 0 }`** 在 `UNSUBSCRIBE`(无 arg)+ 当前无订阅时由 server 直接返回,不走 store。这跟 ADR §Q4 + watch-out 的 nil-channel 边界一致,oracle fixture 6 验证。
+6. **Oracle fixture 6 (PING-in-sub-mode) 直接验证 Spec**:redis-py 的 `pubsub.ping()` 在我们和真 Redis 7 上都返回 `None`(无 raise),说明双方都发的是 `+PONG\r\n`(simple string),而不是 Redis 6 的 Array shape。ADR §Notes 的猜测被 oracle 印证;无需 addendum。

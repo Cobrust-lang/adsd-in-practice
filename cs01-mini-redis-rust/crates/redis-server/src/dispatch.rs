@@ -50,6 +50,10 @@ pub fn from_frame(f: Frame) -> Result<Command, Reply> {
         "PERSIST" => parse_single_key_cmd(&parts, "persist", |key| Command::Persist { key }),
         "TYPE" => parse_single_key_cmd(&parts, "type", |key| Command::Type { key }),
         "KEYS" => parse_keys(&parts),
+        // ── M3.1 (ADR-0009) ─────────────────────────────────────────────
+        "SUBSCRIBE" => parse_subscribe(&parts),
+        "UNSUBSCRIBE" => parse_unsubscribe(&parts),
+        "PUBLISH" => parse_publish(&parts),
         unknown => Err(Reply::Error(format!("ERR unknown command '{unknown}'"))),
     }
 }
@@ -273,4 +277,62 @@ fn parse_keys(parts: &[Frame]) -> Result<Command, Reply> {
         Reply::Error("ERR wrong number of arguments for 'keys' command".to_owned())
     })?;
     Ok(Command::Keys { pattern })
+}
+
+// ── M3.1 (ADR-0009) Pub/Sub parsers ──────────────────────────────────────────
+
+/// `SUBSCRIBE channel [channel ...]` — ≥1 channel required.
+fn parse_subscribe(parts: &[Frame]) -> Result<Command, Reply> {
+    if parts.len() < 2 {
+        return Err(Reply::Error(
+            "ERR wrong number of arguments for 'subscribe' command".to_owned(),
+        ));
+    }
+    let channels: Vec<String> = parts[1..]
+        .iter()
+        .filter_map(|f| bulk_to_string(Some(f)))
+        .collect();
+    if channels.len() != parts.len() - 1 {
+        return Err(Reply::Error(
+            "ERR wrong number of arguments for 'subscribe' command".to_owned(),
+        ));
+    }
+    Ok(Command::Subscribe { channels })
+}
+
+/// `UNSUBSCRIBE [channel ...]` — zero args = unsubscribe from all.
+fn parse_unsubscribe(parts: &[Frame]) -> Result<Command, Reply> {
+    // Empty `channels` is intentional — "UNSUBSCRIBE" (no args) means
+    // unsubscribe from all currently-subscribed channels.
+    if parts.len() == 1 {
+        return Ok(Command::Unsubscribe {
+            channels: Vec::new(),
+        });
+    }
+    let channels: Vec<String> = parts[1..]
+        .iter()
+        .filter_map(|f| bulk_to_string(Some(f)))
+        .collect();
+    if channels.len() != parts.len() - 1 {
+        return Err(Reply::Error(
+            "ERR wrong number of arguments for 'unsubscribe' command".to_owned(),
+        ));
+    }
+    Ok(Command::Unsubscribe { channels })
+}
+
+/// `PUBLISH channel message` — exactly 2 args.
+fn parse_publish(parts: &[Frame]) -> Result<Command, Reply> {
+    if parts.len() != 3 {
+        return Err(Reply::Error(
+            "ERR wrong number of arguments for 'publish' command".to_owned(),
+        ));
+    }
+    let channel = bulk_to_string(parts.get(1)).ok_or_else(|| {
+        Reply::Error("ERR wrong number of arguments for 'publish' command".to_owned())
+    })?;
+    let message = bulk_to_bytes(parts.get(2)).ok_or_else(|| {
+        Reply::Error("ERR wrong number of arguments for 'publish' command".to_owned())
+    })?;
+    Ok(Command::Publish { channel, message })
 }

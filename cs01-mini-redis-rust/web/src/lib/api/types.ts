@@ -21,3 +21,19 @@ export interface KeyInfo {
 	 * see backend commit `0800d86`). */
 	ttl_secs: number;
 }
+
+/** One channel row in the `/api/pubsub` SSE payload (ADR-0009 §Q7). */
+export interface PubsubChannel {
+	name: string;
+	/** Current subscriber count. May be 0 because M3.1 deliberately
+	 * does NOT GC empty channels (the entry stays in the dashboard
+	 * snapshot until M4 release-readiness adds eviction). */
+	subscribers: number;
+}
+
+/** One SSE `event: pubsub` frame's JSON payload. */
+export interface PubsubSnapshot {
+	/** Sorted by `name` ascending — the backend `sort_by(|a, b| ...)`
+	 * happens in `Store::pubsub_snapshot`. Empty array, never null. */
+	channels: PubsubChannel[];
+}

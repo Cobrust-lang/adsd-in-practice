@@ -10,18 +10,21 @@ use redis_storage::Reply;
 
 /// Convert a storage `Reply` into a RESP `Frame` ready for `to_bytes()`.
 ///
-/// Mapping (all 7 variants covered):
+/// Mapping (all 11 variants covered):
 ///
-/// | Reply                 | Frame                             |
-/// |-----------------------|-----------------------------------|
-/// | `Pong`                | `SimpleString("PONG")`            |
-/// | `Ok`                  | `SimpleString("OK")`              |
-/// | `Bulk(opt)`           | `BulkString(opt)`                 |
-/// | `Integer(n)`          | `Integer(n)`                      |
-/// | `Error(msg)`          | `Error(msg)` (no leading `-`!)    |
-/// | `SimpleString(s)`     | `SimpleString(s)` (M1.4)          |
-/// | `Array(Some(items))`  | `Array(Some(bulk*))`              |
-/// | `Array(None)`         | `Array(None)` (`*-1\r\n`)         |
+/// | Reply                                | Frame                                                             |
+/// |--------------------------------------|-------------------------------------------------------------------|
+/// | `Pong`                               | `SimpleString("PONG")`                                            |
+/// | `Ok`                                 | `SimpleString("OK")`                                              |
+/// | `Bulk(opt)`                          | `BulkString(opt)`                                                 |
+/// | `Integer(n)`                         | `Integer(n)`                                                      |
+/// | `Error(msg)`                         | `Error(msg)` (no leading `-`!)                                    |
+/// | `SimpleString(s)`                    | `SimpleString(s)` (M1.4)                                          |
+/// | `Array(Some(items))`                 | `Array(Some(bulk*))`                                              |
+/// | `Array(None)`                        | `Array(None)` (`*-1\r\n`)                                         |
+/// | `SubscribeAck { channel, count }`    | `Array(Some([bulk "subscribe", bulk channel, int count]))` (M3.1) |
+/// | `UnsubscribeAck { channel, count }`  | `Array(Some([bulk "unsubscribe", bulk channel?, int count]))`     |
+/// | `Message { channel, payload }`       | `Array(Some([bulk "message", bulk channel, bulk payload]))`       |
 ///
 /// **Note**: `Reply::Error(msg)` is mapped to `Frame::Error(msg)` *without*
 /// a leading `-` prefix — `Frame::to_bytes()` adds the byte itself.
@@ -41,6 +44,24 @@ pub fn reply_to_frame(reply: Reply) -> Frame {
                 .map(|b| Frame::BulkString(Some(b)))
                 .collect(),
         )),
+        // ── M3.1 (ADR-0009) ──────────────────────────────────────────────
+        Reply::SubscribeAck { channel, count } => Frame::Array(Some(vec![
+            Frame::BulkString(Some(b"subscribe".to_vec())),
+            Frame::BulkString(Some(channel.into_bytes())),
+            Frame::Integer(count),
+        ])),
+        Reply::UnsubscribeAck { channel, count } => Frame::Array(Some(vec![
+            Frame::BulkString(Some(b"unsubscribe".to_vec())),
+            // Redis emits `$-1\r\n` for the channel slot when the
+            // client UNSUBSCRIBEs from "all" but there was nothing.
+            Frame::BulkString(channel.map(String::into_bytes)),
+            Frame::Integer(count),
+        ])),
+        Reply::Message { channel, payload } => Frame::Array(Some(vec![
+            Frame::BulkString(Some(b"message".to_vec())),
+            Frame::BulkString(Some(channel.into_bytes())),
+            Frame::BulkString(Some(payload)),
+        ])),
     }
 }
 
@@ -116,5 +137,81 @@ mod tests {
     fn array_none_maps_to_nil_array() {
         let frame = reply_to_frame(Reply::Array(None));
         assert_eq!(frame.to_bytes(), b"*-1\r\n");
+    }
+
+    // ── M3.1 (ADR-0009) Pub/Sub wire shape ───────────────────────────────
+
+    #[test]
+    fn subscribe_ack_serializes_to_redis7_shape() {
+        let frame = reply_to_frame(Reply::SubscribeAck {
+            channel: "news".to_owned(),
+            count: 1,
+        });
+        // *3\r\n$9\r\nsubscribe\r\n$4\r\nnews\r\n:1\r\n
+        let bytes = frame.to_bytes();
+        assert_eq!(bytes, b"*3\r\n$9\r\nsubscribe\r\n$4\r\nnews\r\n:1\r\n");
+    }
+
+    #[test]
+    fn subscribe_ack_running_count_three() {
+        let frame = reply_to_frame(Reply::SubscribeAck {
+            channel: "c".to_owned(),
+            count: 3,
+        });
+        assert_eq!(
+            frame.to_bytes(),
+            b"*3\r\n$9\r\nsubscribe\r\n$1\r\nc\r\n:3\r\n"
+        );
+    }
+
+    #[test]
+    fn unsubscribe_ack_with_channel() {
+        let frame = reply_to_frame(Reply::UnsubscribeAck {
+            channel: Some("news".to_owned()),
+            count: 0,
+        });
+        assert_eq!(
+            frame.to_bytes(),
+            b"*3\r\n$11\r\nunsubscribe\r\n$4\r\nnews\r\n:0\r\n"
+        );
+    }
+
+    #[test]
+    fn unsubscribe_ack_empty_state_uses_nil_channel() {
+        // UNSUBSCRIBE (no args) on a connection with zero current subs
+        // is the one case where Redis emits `$-1\r\n` for the channel
+        // slot.  Count is 0 in that case.
+        let frame = reply_to_frame(Reply::UnsubscribeAck {
+            channel: None,
+            count: 0,
+        });
+        assert_eq!(
+            frame.to_bytes(),
+            b"*3\r\n$11\r\nunsubscribe\r\n$-1\r\n:0\r\n"
+        );
+    }
+
+    #[test]
+    fn message_serializes_to_redis_push_shape() {
+        let frame = reply_to_frame(Reply::Message {
+            channel: "news".to_owned(),
+            payload: b"hello".to_vec(),
+        });
+        assert_eq!(
+            frame.to_bytes(),
+            b"*3\r\n$7\r\nmessage\r\n$4\r\nnews\r\n$5\r\nhello\r\n"
+        );
+    }
+
+    #[test]
+    fn message_empty_payload_serializes_with_zero_length_bulk() {
+        let frame = reply_to_frame(Reply::Message {
+            channel: "x".to_owned(),
+            payload: Vec::new(),
+        });
+        assert_eq!(
+            frame.to_bytes(),
+            b"*3\r\n$7\r\nmessage\r\n$1\r\nx\r\n$0\r\n\r\n"
+        );
     }
 }
