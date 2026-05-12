@@ -50,7 +50,7 @@ mkdir -p data
 cargo run -p redis-server -- --port 6380 --aof data/dump.aof
 ```
 
-AOF is a simplified append-only mode with no rewrite/compaction in `0.1.0-ready`.
+AOF is a simplified append-only mode with no rewrite/compaction in `0.1.0`.
 
 ## Dev mode and UI
 
@@ -81,7 +81,7 @@ The gate runs install/check/test/build for `web/`. If Node or pnpm is unavailabl
 
 ## Supported commands
 
-Supported in the current committed `0.1.0-ready` line:
+Supported in the current committed `0.1.0` line:
 
 - Connection / utility: `PING`, `ECHO`, `SELECT 0`, `QUIT`
 - String KV: `SET key value`, `SET key value EX seconds`, `GET`, `DEL`, `EXISTS`
@@ -89,7 +89,7 @@ Supported in the current committed `0.1.0-ready` line:
 - Expiry / introspection: `EXPIRE`, `TTL`, `PERSIST`, `TYPE`, `KEYS`
 - Pub/Sub: `SUBSCRIBE`, `UNSUBSCRIBE`, `PUBLISH`
 
-Not implemented in `0.1.0-ready`:
+Not implemented in `0.1.0`:
 
 - AUTH / ACL / TLS
 - replication / cluster

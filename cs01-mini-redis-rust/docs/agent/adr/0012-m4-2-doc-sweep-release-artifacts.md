@@ -69,7 +69,7 @@ All buckets ship in one P9 sprint(7 buckets × 5-9 items = ~30 sub-items)。P9 m
 
 - LICENSE-APACHE:standard Apache 2.0 text(rustls-tls / tokio 用同款)
 - LICENSE-MIT:standard MIT text
-- CHANGELOG.md:keep-a-changelog format;A14.3 release-stamp converts the former `0.1.0-rc` placeholder into a `0.1.0-ready (2026-05-13)` tag-prep entry without inventing a tag SHA
+- CHANGELOG.md:keep-a-changelog format;A14.4 finalization converts the former `0.1.0-rc` placeholder into a final `[0.1.0] - 2026-05-13` release entry without inventing a tag SHA
 - CONTRIBUTING.md:ADSD-aware,链 `_shared/adr-template.md` + `_shared/finding-template.md` + 5-gate / doc-coverage / Tx-tag 流程
 - SECURITY.md:disclosure 走 email + 24h ack SLA(占位),threat model 简引 finding m4-pre-release-audit-team-aggregation
 - METHODOLOGY-STATUS.md cs01 节:含 wave M0→M4.1 实际进展 + 8-agent audit 数据 + F-pattern 候选(`F1.x constitution-vs-ADR drift` + `F23-A.gap happy-path-only oracle`)
@@ -107,7 +107,7 @@ For README §1 (cs01) — 新开头:
 ### Release artifacts (Bucket A)
 - [x] `LICENSE-APACHE` exists at repo root with standard Apache-2.0 text
 - [x] `LICENSE-MIT` exists at repo root with repository copyright holder
-- [x] `CHANGELOG.md` exists at repo root;A14.3 updated first entry to `0.1.0-ready (2026-05-13)`, lists M1-M4.4 readiness evidence, and explicitly keeps DMG/signing/notarization out-of-gate
+- [x] `CHANGELOG.md` exists at repo root;A14.4 updated first entry to `[0.1.0] - 2026-05-13`, lists M1-M4.4 readiness evidence, and explicitly keeps DMG/signing/notarization out-of-gate
 - [x] `cs01-mini-redis-rust/CHANGELOG.md` 同结构
 - [x] `CONTRIBUTING.md` exists at repo root,提到 ADR/finding/5-gate/doc-coverage/Tx-tag/bilingual rule
 - [x] `SECURITY.md` exists at repo root with disclosure path

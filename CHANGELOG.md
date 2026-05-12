@@ -2,9 +2,9 @@
 
 All notable changes to ADSD in Practice are documented in this file.
 
-The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). This repository is ready for the cs01 `v0.1.0` tag; the tag itself has not been created in this changelog entry.
+The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). This repository records the finalized cs01 `v0.1.0` release documentation; the annotated tag is created after this finalization commit.
 
-## [0.1.0-ready] - 2026-05-13
+## [0.1.0] - 2026-05-13
 
 ### Added
 
@@ -25,5 +25,5 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Thi
 ### Release-readiness status
 
 - CTO final audit on main `31b52a1` passed doc-coverage, cargo fmt, cargo clippy, cargo test, prior integration oracle coverage (23/23 RESP, 6/6 Pub/Sub, 7/7 AOF), and the opt-in Tauri `.app` bundle gate: `CS01_TAURI_FULL_BUILD=1 bash scripts/tauri-gate.sh` produced `cs01-mini-redis-rust/web/src-tauri/target/release/bundle/macos/CS01 mini-redis.app`.
-- DMG creation, signing, and notarization remain out-of-gate future release-engineering risks and are not claimed as complete for this tag-prep state.
+- DMG creation, signing, and notarization remain out-of-gate future release-engineering risks and are not claimed as complete for v0.1.0.
 - AUTH, TLS, replication, cluster, Lua, streams, modules, RDB, PSUBSCRIBE/PUNSUBSCRIBE, and full transaction semantics remain out of scope for cs01 `0.1.0`.
