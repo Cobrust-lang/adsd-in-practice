@@ -17,6 +17,7 @@
 | [0009](0009-m3-1-pubsub.md) | M3.1 — Pub/Sub (SUBSCRIBE / UNSUBSCRIBE / PUBLISH) + per-conn subscriber state + /pubsub UI swap | accepted | 2026-05-12 |
 | [0010](0010-m3-2-aof-persistence.md) | M3.2 — AOF append-only persistence + replay-on-restart | accepted | 2026-05-12 |
 | [0011](0011-m4-1-critical-fixes.md) | M4.1 — Critical fixes (security + constitution drift + AOF hardening + parser strictness) | accepted | 2026-05-12 |
+| [0012](0012-m4-2-doc-sweep-release-artifacts.md) | M4.2 — Doc sweep + release artifacts (LICENSE / CHANGELOG / CONTRIBUTING / SECURITY / METHODOLOGY-STATUS + sediment cleanup) | accepted | 2026-05-12 |
 
 ## 命名规范
 
