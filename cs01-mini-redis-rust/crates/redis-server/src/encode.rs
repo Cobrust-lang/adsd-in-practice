@@ -10,15 +10,18 @@ use redis_storage::Reply;
 
 /// Convert a storage `Reply` into a RESP `Frame` ready for `to_bytes()`.
 ///
-/// Mapping (all 5 variants covered):
+/// Mapping (all 7 variants covered):
 ///
-/// | Reply           | Frame                             |
-/// |-----------------|-----------------------------------|
-/// | `Pong`          | `SimpleString("PONG")`            |
-/// | `Ok`            | `SimpleString("OK")`              |
-/// | `Bulk(opt)`     | `BulkString(opt)`                 |
-/// | `Integer(n)`    | `Integer(n)`                      |
-/// | `Error(msg)`    | `Error(msg)` (no leading `-`!)    |
+/// | Reply                 | Frame                             |
+/// |-----------------------|-----------------------------------|
+/// | `Pong`                | `SimpleString("PONG")`            |
+/// | `Ok`                  | `SimpleString("OK")`              |
+/// | `Bulk(opt)`           | `BulkString(opt)`                 |
+/// | `Integer(n)`          | `Integer(n)`                      |
+/// | `Error(msg)`          | `Error(msg)` (no leading `-`!)    |
+/// | `SimpleString(s)`     | `SimpleString(s)` (M1.4)          |
+/// | `Array(Some(items))`  | `Array(Some(bulk*))`              |
+/// | `Array(None)`         | `Array(None)` (`*-1\r\n`)         |
 ///
 /// **Note**: `Reply::Error(msg)` is mapped to `Frame::Error(msg)` *without*
 /// a leading `-` prefix — `Frame::to_bytes()` adds the byte itself.
@@ -30,6 +33,14 @@ pub fn reply_to_frame(reply: Reply) -> Frame {
         Reply::Bulk(opt) => Frame::BulkString(opt),
         Reply::Integer(n) => Frame::Integer(n),
         Reply::Error(msg) => Frame::Error(msg),
+        Reply::SimpleString(s) => Frame::SimpleString(s),
+        Reply::Array(None) => Frame::Array(None),
+        Reply::Array(Some(items)) => Frame::Array(Some(
+            items
+                .into_iter()
+                .map(|b| Frame::BulkString(Some(b)))
+                .collect(),
+        )),
     }
 }
 
@@ -73,5 +84,37 @@ mod tests {
         // is added by Frame::to_bytes itself.
         let frame = reply_to_frame(Reply::Error("ERR boom".to_owned()));
         assert_eq!(frame.to_bytes(), b"-ERR boom\r\n");
+    }
+
+    // ── M1.4 (ADR-0006) ──────────────────────────────────────────────────
+
+    #[test]
+    fn simple_string_maps_with_plus_prefix() {
+        let frame = reply_to_frame(Reply::SimpleString("string".to_owned()));
+        assert_eq!(frame.to_bytes(), b"+string\r\n");
+    }
+
+    #[test]
+    fn simple_string_none_for_type() {
+        let frame = reply_to_frame(Reply::SimpleString("none".to_owned()));
+        assert_eq!(frame.to_bytes(), b"+none\r\n");
+    }
+
+    #[test]
+    fn array_some_maps_to_bulk_array() {
+        let frame = reply_to_frame(Reply::Array(Some(vec![b"a".to_vec(), b"bb".to_vec()])));
+        assert_eq!(frame.to_bytes(), b"*2\r\n$1\r\na\r\n$2\r\nbb\r\n");
+    }
+
+    #[test]
+    fn array_empty_maps_to_zero_length_array() {
+        let frame = reply_to_frame(Reply::Array(Some(vec![])));
+        assert_eq!(frame.to_bytes(), b"*0\r\n");
+    }
+
+    #[test]
+    fn array_none_maps_to_nil_array() {
+        let frame = reply_to_frame(Reply::Array(None));
+        assert_eq!(frame.to_bytes(), b"*-1\r\n");
     }
 }

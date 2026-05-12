@@ -1,4 +1,4 @@
-//! RESP TCP listener (ADR-0005, Option A).
+//! RESP TCP listener (ADR-0005, ADR-0006).
 //!
 //! Accept-loop pattern:
 //! ```text
@@ -6,6 +6,7 @@
 //!   → spawn(handle_conn)
 //!     → loop {
 //!         read_buf into BytesMut
+//!         if buf.len() > max_frame_size { reject + close }   // M1.4
 //!         while let Ok((frame, n)) = Frame::parse(&buf) {
 //!             buf.advance(n);
 //!             let cmd = dispatch::from_frame(frame);
@@ -15,7 +16,7 @@
 //!       }
 //! ```
 //!
-//! Locked sub-decisions (ADR-0005):
+//! Locked sub-decisions (ADR-0005 + ADR-0006):
 //! - Per-connection task via `tokio::spawn` (fault isolation).
 //! - `BytesMut::with_capacity(4096)` + manual drain — **no** `Framed`
 //!   codec (that would re-wrap the pure-function parser; F24 candidate).
@@ -23,9 +24,9 @@
 //! - `QUIT` → send `+OK`, then close socket (caller-side responsibility).
 //! - Graceful shutdown M1.3 simplification: `ctrl_c` breaks the accept
 //!   loop; in-flight tasks finish naturally.  M3 upgrades to drain mode.
-//!
-//! TODO(M3): max-frame-size guard — currently `BytesMut` grows without
-//! bound, so a malicious `$<u64::MAX>` could trigger a large alloc.
+//! - M1.4 (ADR-0006): `max_frame_size` guard on the *buffer total length*
+//!   after each `read_buf`.  Default 512 MiB (matches Redis
+//!   `proto-max-bulk-len`).  Tighter per-frame measurement deferred to v0.2.
 
 use std::io;
 use std::net::SocketAddr;
@@ -39,8 +40,20 @@ use tokio::net::{TcpListener, TcpStream};
 use crate::dispatch::from_frame;
 use crate::encode::reply_to_frame;
 
+/// Default `max-frame-size` guard threshold: 512 MiB.
+///
+/// Matches Redis' `proto-max-bulk-len` default.  Server `run`/`run_on`
+/// callers pass an explicit `usize`; this constant is the canonical
+/// default used by `main.rs` and tests.
+pub const DEFAULT_MAX_FRAME_SIZE: usize = 512 * 1024 * 1024;
+
 /// Bind a `TcpListener` on `addr`, accept connections forever, and
 /// dispatch each one to `handle_conn`.
+///
+/// `max_frame_size` is the per-connection buffer ceiling (bytes).  When
+/// a single read brings the buffer beyond this limit the connection is
+/// terminated with `-ERR Protocol error: frame too big` (matches Redis).
+/// Use [`DEFAULT_MAX_FRAME_SIZE`] for the production default.
 ///
 /// Shuts down on `tokio::signal::ctrl_c`: the accept loop exits and
 /// already-spawned per-connection tasks finish naturally (no in-flight
@@ -51,11 +64,15 @@ use crate::encode::reply_to_frame;
 /// Returns `io::Error` if the listener cannot bind.  Per-connection
 /// IO errors are logged but **never** propagated — one bad connection
 /// must not kill the server (ADR-0005 §"Consequences/正面").
-pub async fn run(addr: SocketAddr, store: Store) -> io::Result<()> {
+pub async fn run(addr: SocketAddr, store: Store, max_frame_size: usize) -> io::Result<()> {
     let listener = TcpListener::bind(addr).await?;
     let local_addr = listener.local_addr()?;
-    tracing::info!(addr = %local_addr, "RESP listener bound");
-    run_on(listener, store).await
+    tracing::info!(
+        addr = %local_addr,
+        max_frame_size,
+        "RESP listener bound"
+    );
+    run_on(listener, store, max_frame_size).await
 }
 
 /// Run the accept loop on an already-bound `TcpListener`.
@@ -63,6 +80,8 @@ pub async fn run(addr: SocketAddr, store: Store) -> io::Result<()> {
 /// Split from [`run`] so integration tests can bind on `127.0.0.1:0`,
 /// read back the OS-assigned port, and exercise the *exact* same
 /// accept loop the production binary uses.
+///
+/// `max_frame_size` is forwarded to each spawned `handle_conn`.
 ///
 /// Note: this variant does **not** install a `ctrl_c` handler — tests
 /// stop the loop by aborting the spawned task or dropping the
@@ -75,7 +94,7 @@ pub async fn run(addr: SocketAddr, store: Store) -> io::Result<()> {
 /// Per-connection IO errors are logged, not propagated.  This
 /// function only returns when its `select!` arm chooses `ctrl_c`
 /// (production) or the task is aborted (tests).
-pub async fn run_on(listener: TcpListener, store: Store) -> io::Result<()> {
+pub async fn run_on(listener: TcpListener, store: Store, max_frame_size: usize) -> io::Result<()> {
     loop {
         tokio::select! {
             accept = listener.accept() => {
@@ -83,7 +102,7 @@ pub async fn run_on(listener: TcpListener, store: Store) -> io::Result<()> {
                     Ok((socket, peer)) => {
                         let store = store.clone();
                         tokio::spawn(async move {
-                            if let Err(e) = handle_conn(socket, store).await {
+                            if let Err(e) = handle_conn(socket, store, max_frame_size).await {
                                 tracing::warn!(peer = %peer, error = %e, "conn closed with error");
                             }
                         });
@@ -113,7 +132,11 @@ pub async fn run_on(listener: TcpListener, store: Store) -> io::Result<()> {
 ///
 /// On `Command::Quit`, the `+OK` reply is flushed and the function
 /// returns (which drops the socket).
-async fn handle_conn(mut socket: TcpStream, store: Store) -> io::Result<()> {
+///
+/// M1.4 (ADR-0006): after each `read_buf`, if `buf.len() > max_frame_size`,
+/// we send `-ERR Protocol error: frame too big` and close the socket.
+/// This is the *buffer total* not per-frame; v0.2 may tighten this.
+async fn handle_conn(mut socket: TcpStream, store: Store, max_frame_size: usize) -> io::Result<()> {
     let mut buf = BytesMut::with_capacity(4096);
 
     loop {
@@ -121,6 +144,15 @@ async fn handle_conn(mut socket: TcpStream, store: Store) -> io::Result<()> {
         if socket.read_buf(&mut buf).await? == 0 {
             // Peer closed.  If there's stale data in the buffer it's
             // an incomplete frame — treat as a clean disconnect.
+            return Ok(());
+        }
+
+        // 1a. M1.4 (ADR-0006) — frame-size guard.  If the accumulated
+        //     buffer exceeds the configured ceiling, the client is
+        //     either malicious or buggy; reject and close.
+        if buf.len() > max_frame_size {
+            let err = Frame::Error("ERR Protocol error: frame too big".to_owned());
+            let _ = socket.write_all(&err.to_bytes()).await;
             return Ok(());
         }
 

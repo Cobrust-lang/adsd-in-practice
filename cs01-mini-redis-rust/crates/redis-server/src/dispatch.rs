@@ -44,6 +44,12 @@ pub fn from_frame(f: Frame) -> Result<Command, Reply> {
         "ECHO" => parse_echo(&parts),
         "SELECT" => parse_select(&parts),
         "QUIT" => parse_quit(&parts),
+        // ── M1.4 (ADR-0006) ─────────────────────────────────────────────
+        "EXPIRE" => parse_expire(&parts),
+        "TTL" => parse_single_key_cmd(&parts, "ttl", |key| Command::Ttl { key }),
+        "PERSIST" => parse_single_key_cmd(&parts, "persist", |key| Command::Persist { key }),
+        "TYPE" => parse_single_key_cmd(&parts, "type", |key| Command::Type { key }),
+        "KEYS" => parse_keys(&parts),
         unknown => Err(Reply::Error(format!("ERR unknown command '{unknown}'"))),
     }
 }
@@ -70,13 +76,23 @@ fn bulk_to_bytes(frame: Option<&Frame>) -> Option<Vec<u8>> {
 // ── Per-command parsers ───────────────────────────────────────────────────────
 
 fn parse_ping(parts: &[Frame]) -> Result<Command, Reply> {
-    // PING has no required arguments in M1.2 (optional message not yet implemented).
-    if parts.len() > 1 {
-        return Err(Reply::Error(
+    // PING (no args)  → Ping { message: None }
+    // PING <message>  → Ping { message: Some(bytes) }    (M1.4, ADR-0006)
+    // PING X Y ...    → ERR wrong number of arguments
+    match parts.len() {
+        1 => Ok(Command::Ping { message: None }),
+        2 => {
+            let bytes = bulk_to_bytes(parts.get(1)).ok_or_else(|| {
+                Reply::Error("ERR wrong number of arguments for 'ping' command".to_owned())
+            })?;
+            Ok(Command::Ping {
+                message: Some(bytes),
+            })
+        }
+        _ => Err(Reply::Error(
             "ERR wrong number of arguments for 'ping' command".to_owned(),
-        ));
+        )),
     }
-    Ok(Command::Ping)
 }
 
 fn parse_get(parts: &[Frame]) -> Result<Command, Reply> {
@@ -226,4 +242,35 @@ fn parse_quit(parts: &[Frame]) -> Result<Command, Reply> {
         ));
     }
     Ok(Command::Quit)
+}
+
+// ── M1.4 (ADR-0006) parsers ──────────────────────────────────────────────────
+
+fn parse_expire(parts: &[Frame]) -> Result<Command, Reply> {
+    if parts.len() != 3 {
+        return Err(Reply::Error(
+            "ERR wrong number of arguments for 'expire' command".to_owned(),
+        ));
+    }
+    let key = bulk_to_string(parts.get(1)).ok_or_else(|| {
+        Reply::Error("ERR wrong number of arguments for 'expire' command".to_owned())
+    })?;
+    let secs_str = bulk_to_string(parts.get(2))
+        .ok_or_else(|| Reply::Error("ERR value is not an integer or out of range".to_owned()))?;
+    let seconds: i64 = secs_str
+        .parse()
+        .map_err(|_| Reply::Error("ERR value is not an integer or out of range".to_owned()))?;
+    Ok(Command::Expire { key, seconds })
+}
+
+fn parse_keys(parts: &[Frame]) -> Result<Command, Reply> {
+    if parts.len() != 2 {
+        return Err(Reply::Error(
+            "ERR wrong number of arguments for 'keys' command".to_owned(),
+        ));
+    }
+    let pattern = bulk_to_string(parts.get(1)).ok_or_else(|| {
+        Reply::Error("ERR wrong number of arguments for 'keys' command".to_owned())
+    })?;
+    Ok(Command::Keys { pattern })
 }

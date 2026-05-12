@@ -247,6 +247,513 @@ async fn quit_returns_ok() {
     assert_eq!(reply, Reply::Ok);
 }
 
+// ── ADR-0006 (M1.4) — PING optional message ────────────────────────────────
+
+#[tokio::test(start_paused = true)]
+async fn ping_no_message_returns_pong() {
+    let s = Store::new();
+    let r = s
+        .execute(Command::Ping { message: None })
+        .expect("ping infallible");
+    assert_eq!(r, Reply::Pong);
+}
+
+#[tokio::test(start_paused = true)]
+async fn ping_with_message_returns_bulk() {
+    let s = Store::new();
+    let r = s
+        .execute(Command::Ping {
+            message: Some(b"hello".to_vec()),
+        })
+        .expect("ping infallible");
+    assert_eq!(r, Reply::Bulk(Some(b"hello".to_vec())));
+}
+
+// ── ADR-0006 (M1.4) — EXPIRE / TTL / PERSIST ───────────────────────────────
+
+#[tokio::test(start_paused = true)]
+async fn expire_existing_key_returns_one() {
+    let store = Store::new();
+    store
+        .execute(Command::Set {
+            key: "k".to_owned(),
+            value: b"v".to_vec(),
+            ttl_secs: None,
+        })
+        .expect("set");
+    let r = store
+        .execute(Command::Expire {
+            key: "k".to_owned(),
+            seconds: 60,
+        })
+        .expect("expire");
+    assert_eq!(r, Reply::Integer(1));
+}
+
+#[tokio::test(start_paused = true)]
+async fn expire_missing_key_returns_zero() {
+    let store = Store::new();
+    let r = store
+        .execute(Command::Expire {
+            key: "nope".to_owned(),
+            seconds: 60,
+        })
+        .expect("expire");
+    assert_eq!(r, Reply::Integer(0));
+}
+
+#[tokio::test(start_paused = true)]
+async fn ttl_missing_key_is_minus_two() {
+    let store = Store::new();
+    let r = store
+        .execute(Command::Ttl {
+            key: "nope".to_owned(),
+        })
+        .expect("ttl");
+    assert_eq!(r, Reply::Integer(-2));
+}
+
+#[tokio::test(start_paused = true)]
+async fn ttl_no_ttl_key_is_minus_one() {
+    let store = Store::new();
+    store
+        .execute(Command::Set {
+            key: "k".to_owned(),
+            value: b"v".to_vec(),
+            ttl_secs: None,
+        })
+        .expect("set");
+    let r = store
+        .execute(Command::Ttl {
+            key: "k".to_owned(),
+        })
+        .expect("ttl");
+    assert_eq!(r, Reply::Integer(-1));
+}
+
+#[tokio::test(start_paused = true)]
+async fn ttl_with_ttl_key_is_remaining_seconds() {
+    let store = Store::new();
+    store
+        .execute(Command::Set {
+            key: "k".to_owned(),
+            value: b"v".to_vec(),
+            ttl_secs: Some(100),
+        })
+        .expect("set");
+    let r = store
+        .execute(Command::Ttl {
+            key: "k".to_owned(),
+        })
+        .expect("ttl");
+    // Allow ±1s drift per ADR-0006 done criteria (paused-time so we expect 100).
+    match r {
+        Reply::Integer(n) => assert!(
+            (99..=100).contains(&n),
+            "expected remaining secs near 100, got {n}"
+        ),
+        other => panic!("expected Integer, got {other:?}"),
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn persist_existing_ttl_returns_one_and_clears_ttl() {
+    let store = Store::new();
+    store
+        .execute(Command::Set {
+            key: "k".to_owned(),
+            value: b"v".to_vec(),
+            ttl_secs: Some(100),
+        })
+        .expect("set");
+    let r = store
+        .execute(Command::Persist {
+            key: "k".to_owned(),
+        })
+        .expect("persist");
+    assert_eq!(r, Reply::Integer(1));
+    // TTL after PERSIST is -1.
+    let after = store
+        .execute(Command::Ttl {
+            key: "k".to_owned(),
+        })
+        .expect("ttl");
+    assert_eq!(after, Reply::Integer(-1));
+}
+
+#[tokio::test(start_paused = true)]
+async fn persist_no_ttl_returns_zero() {
+    let store = Store::new();
+    store
+        .execute(Command::Set {
+            key: "k".to_owned(),
+            value: b"v".to_vec(),
+            ttl_secs: None,
+        })
+        .expect("set");
+    let r = store
+        .execute(Command::Persist {
+            key: "k".to_owned(),
+        })
+        .expect("persist");
+    assert_eq!(r, Reply::Integer(0));
+}
+
+#[tokio::test(start_paused = true)]
+async fn persist_missing_key_returns_zero() {
+    let store = Store::new();
+    let r = store
+        .execute(Command::Persist {
+            key: "nope".to_owned(),
+        })
+        .expect("persist");
+    assert_eq!(r, Reply::Integer(0));
+}
+
+#[tokio::test(start_paused = true)]
+async fn expire_then_advance_makes_key_disappear() {
+    let store = Store::new();
+    store
+        .execute(Command::Set {
+            key: "k".to_owned(),
+            value: b"v".to_vec(),
+            ttl_secs: None,
+        })
+        .expect("set");
+    store
+        .execute(Command::Expire {
+            key: "k".to_owned(),
+            seconds: 1,
+        })
+        .expect("expire");
+    tokio::time::advance(Duration::from_millis(1100)).await;
+    tokio::task::yield_now().await;
+    let r = store
+        .execute(Command::Get {
+            key: "k".to_owned(),
+        })
+        .expect("get");
+    assert_eq!(r, Reply::Bulk(None));
+}
+
+#[tokio::test(start_paused = true)]
+async fn expire_repeated_last_wins() {
+    // EXPIRE multiple times — last setting wins; old DelayQueue entries
+    // must not delete the key prematurely (ADR-0006 stale-fire skip).
+    let store = Store::new();
+    store
+        .execute(Command::Set {
+            key: "k".to_owned(),
+            value: b"v".to_vec(),
+            ttl_secs: None,
+        })
+        .expect("set");
+    store
+        .execute(Command::Expire {
+            key: "k".to_owned(),
+            seconds: 1,
+        })
+        .expect("expire 1");
+    // Re-EXPIRE longer.
+    store
+        .execute(Command::Expire {
+            key: "k".to_owned(),
+            seconds: 10,
+        })
+        .expect("expire 10");
+    // Advance past the original 1s TTL — stale DelayQueue entry would
+    // fire here.  Key must SURVIVE (expires_at now points to the new
+    // longer deadline; guard in `Store::new` should skip the stale fire).
+    tokio::time::advance(Duration::from_millis(1500)).await;
+    tokio::task::yield_now().await;
+    let r = store
+        .execute(Command::Get {
+            key: "k".to_owned(),
+        })
+        .expect("get");
+    assert_eq!(
+        r,
+        Reply::Bulk(Some(b"v".to_vec())),
+        "key must survive stale expiry fire"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn persist_then_stale_fire_does_not_delete_key() {
+    // PERSIST regression: SET k v EX 1; PERSIST k; advance > 1s; key
+    // must still be present (old DelayQueue entry sees expires_at=None
+    // and skips removal).
+    let store = Store::new();
+    store
+        .execute(Command::Set {
+            key: "k".to_owned(),
+            value: b"v".to_vec(),
+            ttl_secs: Some(1),
+        })
+        .expect("set ttl");
+    store
+        .execute(Command::Persist {
+            key: "k".to_owned(),
+        })
+        .expect("persist");
+    tokio::time::advance(Duration::from_millis(1500)).await;
+    tokio::task::yield_now().await;
+    let r = store
+        .execute(Command::Get {
+            key: "k".to_owned(),
+        })
+        .expect("get");
+    assert_eq!(
+        r,
+        Reply::Bulk(Some(b"v".to_vec())),
+        "PERSIST must defuse the stale DelayQueue fire"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn expire_zero_or_negative_deletes_key() {
+    // Real Redis: EXPIRE k 0 (or negative) deletes the key.  Our impl
+    // mirrors that.
+    let store = Store::new();
+    store
+        .execute(Command::Set {
+            key: "k".to_owned(),
+            value: b"v".to_vec(),
+            ttl_secs: None,
+        })
+        .expect("set");
+    let r = store
+        .execute(Command::Expire {
+            key: "k".to_owned(),
+            seconds: 0,
+        })
+        .expect("expire 0");
+    assert_eq!(r, Reply::Integer(1));
+    let g = store
+        .execute(Command::Get {
+            key: "k".to_owned(),
+        })
+        .expect("get");
+    assert_eq!(g, Reply::Bulk(None));
+}
+
+// ── ADR-0006 (M1.4) — TYPE ─────────────────────────────────────────────────
+
+#[tokio::test(start_paused = true)]
+async fn type_existing_string_returns_string() {
+    let store = Store::new();
+    store
+        .execute(Command::Set {
+            key: "k".to_owned(),
+            value: b"v".to_vec(),
+            ttl_secs: None,
+        })
+        .expect("set");
+    let r = store
+        .execute(Command::Type {
+            key: "k".to_owned(),
+        })
+        .expect("type");
+    assert_eq!(r, Reply::SimpleString("string".to_owned()));
+}
+
+#[tokio::test(start_paused = true)]
+async fn type_missing_returns_none() {
+    let store = Store::new();
+    let r = store
+        .execute(Command::Type {
+            key: "nope".to_owned(),
+        })
+        .expect("type");
+    assert_eq!(r, Reply::SimpleString("none".to_owned()));
+}
+
+#[tokio::test(start_paused = true)]
+async fn type_expired_key_returns_none() {
+    let store = Store::new();
+    store
+        .execute(Command::Set {
+            key: "k".to_owned(),
+            value: b"v".to_vec(),
+            ttl_secs: Some(1),
+        })
+        .expect("set");
+    tokio::time::advance(Duration::from_millis(1100)).await;
+    // Do NOT yield — we want to check the "logically expired but not yet
+    // swept" path (entry still in map, expires_at in past).
+    let r = store
+        .execute(Command::Type {
+            key: "k".to_owned(),
+        })
+        .expect("type");
+    assert_eq!(r, Reply::SimpleString("none".to_owned()));
+}
+
+// ── ADR-0006 (M1.4) — KEYS ─────────────────────────────────────────────────
+
+#[tokio::test(start_paused = true)]
+async fn keys_star_returns_all_live_keys() {
+    let store = Store::new();
+    for k in ["a", "b", "c"] {
+        store
+            .execute(Command::Set {
+                key: k.to_owned(),
+                value: b"v".to_vec(),
+                ttl_secs: None,
+            })
+            .expect("set");
+    }
+    let r = store
+        .execute(Command::Keys {
+            pattern: "*".to_owned(),
+        })
+        .expect("keys");
+    let Reply::Array(Some(mut keys)) = r else {
+        panic!("expected Array(Some(_)), got {r:?}");
+    };
+    keys.sort();
+    assert_eq!(keys, vec![b"a".to_vec(), b"b".to_vec(), b"c".to_vec()]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn keys_prefix_pattern() {
+    let store = Store::new();
+    for k in ["user:1", "user:2", "post:1"] {
+        store
+            .execute(Command::Set {
+                key: k.to_owned(),
+                value: b"v".to_vec(),
+                ttl_secs: None,
+            })
+            .expect("set");
+    }
+    let r = store
+        .execute(Command::Keys {
+            pattern: "user:*".to_owned(),
+        })
+        .expect("keys");
+    let Reply::Array(Some(mut keys)) = r else {
+        panic!("expected Array(Some(_)), got {r:?}");
+    };
+    keys.sort();
+    assert_eq!(keys, vec![b"user:1".to_vec(), b"user:2".to_vec()]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn keys_question_pattern_single_char() {
+    let store = Store::new();
+    for k in ["user:1", "user:2", "user:42"] {
+        store
+            .execute(Command::Set {
+                key: k.to_owned(),
+                value: b"v".to_vec(),
+                ttl_secs: None,
+            })
+            .expect("set");
+    }
+    let r = store
+        .execute(Command::Keys {
+            pattern: "user:?".to_owned(),
+        })
+        .expect("keys");
+    let Reply::Array(Some(mut keys)) = r else {
+        panic!("expected Array(Some(_)), got {r:?}");
+    };
+    keys.sort();
+    assert_eq!(keys, vec![b"user:1".to_vec(), b"user:2".to_vec()]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn keys_class_pattern() {
+    let store = Store::new();
+    for k in ["apple", "banana", "cherry", "date"] {
+        store
+            .execute(Command::Set {
+                key: k.to_owned(),
+                value: b"v".to_vec(),
+                ttl_secs: None,
+            })
+            .expect("set");
+    }
+    let r = store
+        .execute(Command::Keys {
+            pattern: "[abc]*".to_owned(),
+        })
+        .expect("keys");
+    let Reply::Array(Some(mut keys)) = r else {
+        panic!("expected Array(Some(_)), got {r:?}");
+    };
+    keys.sort();
+    assert_eq!(
+        keys,
+        vec![b"apple".to_vec(), b"banana".to_vec(), b"cherry".to_vec()]
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn keys_escaped_star_is_literal() {
+    let store = Store::new();
+    store
+        .execute(Command::Set {
+            key: "*".to_owned(),
+            value: b"v".to_vec(),
+            ttl_secs: None,
+        })
+        .expect("set literal *");
+    store
+        .execute(Command::Set {
+            key: "x".to_owned(),
+            value: b"v".to_vec(),
+            ttl_secs: None,
+        })
+        .expect("set x");
+    let r = store
+        .execute(Command::Keys {
+            pattern: "\\*".to_owned(),
+        })
+        .expect("keys");
+    assert_eq!(r, Reply::Array(Some(vec![b"*".to_vec()])));
+}
+
+#[tokio::test(start_paused = true)]
+async fn keys_empty_db_returns_empty_array() {
+    let store = Store::new();
+    let r = store
+        .execute(Command::Keys {
+            pattern: "*".to_owned(),
+        })
+        .expect("keys");
+    assert_eq!(r, Reply::Array(Some(vec![])));
+}
+
+#[tokio::test(start_paused = true)]
+async fn keys_skips_expired() {
+    let store = Store::new();
+    store
+        .execute(Command::Set {
+            key: "live".to_owned(),
+            value: b"v".to_vec(),
+            ttl_secs: None,
+        })
+        .expect("set live");
+    store
+        .execute(Command::Set {
+            key: "dead".to_owned(),
+            value: b"v".to_vec(),
+            ttl_secs: Some(1),
+        })
+        .expect("set dead");
+    tokio::time::advance(Duration::from_millis(1100)).await;
+    // Do NOT yield to background — we want the "logically expired but
+    // not yet swept" path.
+    let r = store
+        .execute(Command::Keys {
+            pattern: "*".to_owned(),
+        })
+        .expect("keys");
+    assert_eq!(r, Reply::Array(Some(vec![b"live".to_vec()])));
+}
+
 // ── ADR-0003 Criterion 7 ────────────────────────────────────────────────────
 // SET without TTL overwrites an expiring key; key survives past old TTL.
 

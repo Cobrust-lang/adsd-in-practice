@@ -20,7 +20,7 @@ fn parse(input: &[u8]) -> Frame {
 fn dispatch_ping() {
     let frame = parse(b"*1\r\n$4\r\nPING\r\n");
     let cmd = from_frame(frame).expect("PING must parse");
-    assert!(matches!(cmd, Command::Ping));
+    assert!(matches!(cmd, Command::Ping { message: None }));
 }
 
 // ── ADR-0004 Criterion 2 ─────────────────────────────────────────────────────
@@ -246,4 +246,109 @@ fn dispatch_quit_with_args_is_error() {
         matches!(&err, Reply::Error(msg) if msg.contains("wrong number of arguments for 'quit'")),
         "unexpected error: {err:?}"
     );
+}
+
+// ── M1.4 (ADR-0006) — PING optional message ─────────────────────────────────
+
+#[test]
+fn dispatch_ping_with_message() {
+    let frame = parse(b"*2\r\n$4\r\nPING\r\n$5\r\nhello\r\n");
+    let cmd = from_frame(frame).expect("PING hello must parse");
+    assert!(matches!(cmd, Command::Ping { message: Some(b) } if b == b"hello"));
+}
+
+#[test]
+fn dispatch_ping_too_many_args_is_error() {
+    let frame = parse(b"*3\r\n$4\r\nPING\r\n$1\r\na\r\n$1\r\nb\r\n");
+    let err = from_frame(frame).expect_err("PING with 2 messages must error");
+    assert!(
+        matches!(&err, Reply::Error(msg) if msg.contains("wrong number of arguments for 'ping'")),
+        "unexpected error: {err:?}"
+    );
+}
+
+// ── M1.4 (ADR-0006) — EXPIRE / TTL / PERSIST / TYPE / KEYS ─────────────────
+
+#[test]
+fn dispatch_expire() {
+    let frame = parse(b"*3\r\n$6\r\nEXPIRE\r\n$3\r\nfoo\r\n$2\r\n60\r\n");
+    let cmd = from_frame(frame).expect("EXPIRE must parse");
+    assert!(matches!(cmd, Command::Expire { key, seconds: 60 } if key == "foo"));
+}
+
+#[test]
+fn dispatch_expire_case_insensitive() {
+    let frame = parse(b"*3\r\n$6\r\nexpire\r\n$1\r\nk\r\n$1\r\n5\r\n");
+    let cmd = from_frame(frame).expect("expire lower must parse");
+    assert!(matches!(cmd, Command::Expire { key, seconds: 5 } if key == "k"));
+}
+
+#[test]
+fn dispatch_expire_wrong_arity_is_error() {
+    let frame = parse(b"*2\r\n$6\r\nEXPIRE\r\n$1\r\nk\r\n");
+    let err = from_frame(frame).expect_err("EXPIRE without seconds must error");
+    assert!(
+        matches!(&err, Reply::Error(msg) if msg.contains("wrong number of arguments for 'expire'")),
+        "unexpected error: {err:?}"
+    );
+}
+
+#[test]
+fn dispatch_expire_non_integer_seconds_is_error() {
+    let frame = parse(b"*3\r\n$6\r\nEXPIRE\r\n$1\r\nk\r\n$3\r\nabc\r\n");
+    let err = from_frame(frame).expect_err("EXPIRE with non-integer seconds must error");
+    assert!(
+        matches!(&err, Reply::Error(msg) if msg.contains("not an integer")),
+        "unexpected error: {err:?}"
+    );
+}
+
+#[test]
+fn dispatch_ttl() {
+    let frame = parse(b"*2\r\n$3\r\nTTL\r\n$3\r\nfoo\r\n");
+    let cmd = from_frame(frame).expect("TTL must parse");
+    assert!(matches!(cmd, Command::Ttl { key } if key == "foo"));
+}
+
+#[test]
+fn dispatch_ttl_wrong_arity_is_error() {
+    let frame = parse(b"*1\r\n$3\r\nTTL\r\n");
+    let err = from_frame(frame).expect_err("TTL with no key must error");
+    assert!(matches!(&err, Reply::Error(_)));
+}
+
+#[test]
+fn dispatch_persist() {
+    let frame = parse(b"*2\r\n$7\r\nPERSIST\r\n$3\r\nfoo\r\n");
+    let cmd = from_frame(frame).expect("PERSIST must parse");
+    assert!(matches!(cmd, Command::Persist { key } if key == "foo"));
+}
+
+#[test]
+fn dispatch_type() {
+    let frame = parse(b"*2\r\n$4\r\nTYPE\r\n$3\r\nfoo\r\n");
+    let cmd = from_frame(frame).expect("TYPE must parse");
+    assert!(matches!(cmd, Command::Type { key } if key == "foo"));
+}
+
+#[test]
+fn dispatch_keys_star() {
+    let frame = parse(b"*2\r\n$4\r\nKEYS\r\n$1\r\n*\r\n");
+    let cmd = from_frame(frame).expect("KEYS * must parse");
+    assert!(matches!(cmd, Command::Keys { pattern } if pattern == "*"));
+}
+
+#[test]
+fn dispatch_keys_complex_pattern() {
+    // "user:?*" = 7 bytes.
+    let frame = parse(b"*2\r\n$4\r\nKEYS\r\n$7\r\nuser:?*\r\n");
+    let cmd = from_frame(frame).expect("KEYS user:?* must parse");
+    assert!(matches!(cmd, Command::Keys { pattern } if pattern == "user:?*"));
+}
+
+#[test]
+fn dispatch_keys_wrong_arity_is_error() {
+    let frame = parse(b"*1\r\n$4\r\nKEYS\r\n");
+    let err = from_frame(frame).expect_err("KEYS with no pattern must error");
+    assert!(matches!(&err, Reply::Error(_)));
 }

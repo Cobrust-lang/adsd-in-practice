@@ -4,6 +4,9 @@
 //! parse args → init tracing → build `Store` → run accept-loop until
 //! `ctrl_c`.
 //!
+//! Wave M1.4 (ADR-0006) — adds `--max-frame-size` to bound the
+//! per-connection buffer size as a basic DoS guard.
+//!
 //! `--http-port` and `--aof` are reserved for M2 (SSE) and M3 (AOF)
 //! and currently logged as informational placeholders.
 
@@ -12,6 +15,7 @@
 use std::net::{IpAddr, SocketAddr};
 
 use clap::Parser;
+use redis_server::server::DEFAULT_MAX_FRAME_SIZE;
 use redis_storage::Store;
 
 #[derive(Parser, Debug)]
@@ -32,6 +36,12 @@ struct Args {
     /// AOF file path (M3 placeholder — persistence disabled if absent)
     #[arg(long)]
     aof: Option<String>,
+
+    /// Per-connection buffer size ceiling (bytes).  When exceeded the
+    /// connection is terminated with `-ERR Protocol error: frame too big`.
+    /// Matches Redis' `proto-max-bulk-len` (default 512 MiB).
+    #[arg(long, default_value_t = DEFAULT_MAX_FRAME_SIZE as u64)]
+    max_frame_size: u64,
 }
 
 #[tokio::main]
@@ -51,16 +61,24 @@ async fn main() -> anyhow::Result<()> {
         .map_err(|e| anyhow::anyhow!("invalid --bind address {bind:?}: {e}", bind = args.bind))?;
     let addr = SocketAddr::new(ip, args.port);
 
+    let max_frame_size: usize = usize::try_from(args.max_frame_size).map_err(|_| {
+        anyhow::anyhow!(
+            "invalid --max-frame-size {n}: does not fit in platform usize",
+            n = args.max_frame_size
+        )
+    })?;
+
     tracing::info!(
         port = args.port,
         bind = %args.bind,
         http_port = args.http_port,
         aof = ?args.aof,
-        "mini-redis-server starting (M1.3)"
+        max_frame_size,
+        "mini-redis-server starting (M1.4)"
     );
 
     let store = Store::new();
-    redis_server::server::run(addr, store).await?;
+    redis_server::server::run(addr, store, max_frame_size).await?;
 
     tracing::info!("mini-redis-server stopped cleanly");
     Ok(())
