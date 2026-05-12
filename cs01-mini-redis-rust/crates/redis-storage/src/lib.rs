@@ -352,7 +352,15 @@ impl Store {
     }
 
     /// `TTL key` — Redis wire semantics:
-    /// `-2 = absent`, `-1 = no TTL`, otherwise floor((expires_at − now).as_secs()).
+    /// `-2 = absent`, `-1 = no TTL`, otherwise remaining seconds.
+    ///
+    /// Rounding: matches real Redis `(pttl_ms + 500) / 1000` — i.e.
+    /// round-to-nearest, half-up.  ADR-0006 originally specified `floor`
+    /// but the F23-A docker oracle (`redis:7-alpine`) revealed that real
+    /// Redis returns the originally-requested N immediately after
+    /// `SET k v EX N`; floor would return N − 1 once any sub-millisecond
+    /// of dispatch latency has elapsed.  This is logged as an ADR-0006
+    /// addendum in the M1.4 completion report.
     fn do_ttl(inner: &Arc<RwLock<Inner>>, key: &str) -> Reply {
         let guard = inner.read();
         let now = Instant::now();
@@ -363,7 +371,11 @@ impl Store {
                 Some(t) if t <= now => Reply::Integer(-2),
                 Some(t) => {
                     let remaining = t.saturating_duration_since(now);
-                    let secs: i64 = remaining.as_secs().try_into().unwrap_or(i64::MAX);
+                    // Round-to-nearest (half up).  `as_millis()` returns
+                    // u128; we go via i64 with saturation.
+                    let ms: u128 = remaining.as_millis();
+                    let secs_rounded: u128 = (ms + 500) / 1000;
+                    let secs: i64 = i64::try_from(secs_rounded).unwrap_or(i64::MAX);
                     Reply::Integer(secs)
                 }
             },
