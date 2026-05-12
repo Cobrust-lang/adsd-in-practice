@@ -112,8 +112,13 @@ fn parse_get(parts: &[Frame]) -> Result<Command, Reply> {
 }
 
 fn parse_set(parts: &[Frame]) -> Result<Command, Reply> {
-    // Minimum: SET key value (3 parts)
-    // With EX:  SET key value EX secs (5 parts)
+    // Strict arity (M4.1, ADR-0011 §#10):
+    //   SET key value          → 3 parts
+    //   SET key value EX secs  → 5 parts
+    //   Anything else (4, 6+) → `-ERR syntax error` (matches real
+    //   Redis; M3.2 used `>= 5` which silently accepted trailing
+    //   tokens like `SET k v EX 60 GARBAGE` and was caught by the
+    //   pre-M4 audit deep-source-read as F23-A oracle gap SA-6).
     if parts.len() < 3 {
         return Err(Reply::Error(
             "ERR wrong number of arguments for 'set' command".to_owned(),
@@ -126,27 +131,35 @@ fn parse_set(parts: &[Frame]) -> Result<Command, Reply> {
         Reply::Error("ERR wrong number of arguments for 'set' command".to_owned())
     })?;
 
-    // Parse optional EX <secs> suffix.
-    let ttl_secs = if parts.len() >= 5 {
-        let opt_name = bulk_to_string(parts.get(3))
-            .ok_or_else(|| Reply::Error("ERR syntax error".to_owned()))?;
-        if !opt_name.eq_ignore_ascii_case("EX") {
+    let ttl_secs = match parts.len() {
+        3 => None,
+        4 => {
+            // 4 parts means EX is present but secs is missing — Redis
+            // returns the arity error here, not syntax error.
+            return Err(Reply::Error(
+                "ERR wrong number of arguments for 'set' command".to_owned(),
+            ));
+        }
+        5 => {
+            let opt_name = bulk_to_string(parts.get(3))
+                .ok_or_else(|| Reply::Error("ERR syntax error".to_owned()))?;
+            if !opt_name.eq_ignore_ascii_case("EX") {
+                return Err(Reply::Error("ERR syntax error".to_owned()));
+            }
+            let secs_str = bulk_to_string(parts.get(4)).ok_or_else(|| {
+                Reply::Error("ERR value is not an integer or out of range".to_owned())
+            })?;
+            let secs: u64 = secs_str.parse().map_err(|_| {
+                Reply::Error("ERR value is not an integer or out of range".to_owned())
+            })?;
+            Some(secs)
+        }
+        _ => {
+            // 6+ parts → trailing token after `SET k v EX n`.  Real
+            // Redis returns the verbatim "ERR syntax error" — see
+            // oracle.sh fixture `SET k v EX 60 GARBAGE`.
             return Err(Reply::Error("ERR syntax error".to_owned()));
         }
-        let secs_str = bulk_to_string(parts.get(4)).ok_or_else(|| {
-            Reply::Error("ERR value is not an integer or out of range".to_owned())
-        })?;
-        let secs: u64 = secs_str
-            .parse()
-            .map_err(|_| Reply::Error("ERR value is not an integer or out of range".to_owned()))?;
-        Some(secs)
-    } else if parts.len() == 4 {
-        // 4 parts means EX is present but secs is missing.
-        return Err(Reply::Error(
-            "ERR wrong number of arguments for 'set' command".to_owned(),
-        ));
-    } else {
-        None
     };
 
     Ok(Command::Set {

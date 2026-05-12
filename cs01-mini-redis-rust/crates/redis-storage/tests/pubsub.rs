@@ -72,6 +72,7 @@ async fn publish_with_no_subscribers_returns_zero() {
             channel: "nobody-home".to_owned(),
             message: b"hi".to_vec(),
         })
+        .await
         .expect("publish infallible");
     assert_eq!(reply, Reply::Integer(0));
 }
@@ -86,6 +87,7 @@ async fn publish_to_a_subscribed_channel_returns_one_and_delivers_payload() {
             channel: "news".to_owned(),
             message: b"hello".to_vec(),
         })
+        .await
         .expect("publish");
     assert_eq!(reply, Reply::Integer(1));
 
@@ -108,6 +110,7 @@ async fn publish_to_three_subscribers_returns_three_and_delivers_to_all() {
             channel: "chat".to_owned(),
             message: b"go".to_vec(),
         })
+        .await
         .expect("publish");
     assert_eq!(reply, Reply::Integer(3));
 
@@ -131,6 +134,7 @@ async fn publish_binary_payload_preserved() {
             channel: "bin".to_owned(),
             message: payload.clone(),
         })
+        .await
         .expect("publish");
     assert_eq!(reply, Reply::Integer(1));
 
@@ -154,6 +158,7 @@ async fn publish_payload_is_arc_shared_across_subscribers() {
             channel: "zerocopy".to_owned(),
             message: b"X".to_vec(),
         })
+        .await
         .expect("publish");
 
     let a = tokio::time::timeout(Duration::from_millis(200), rx_a.recv())
@@ -180,6 +185,7 @@ async fn subscribe_unsubscribe_via_execute_return_error_reply() {
         .execute(Command::Subscribe {
             channels: vec!["c".to_owned()],
         })
+        .await
         .expect("execute returns Ok wrapping a Reply::Error");
     assert!(matches!(r1, Reply::Error(_)));
 
@@ -187,6 +193,76 @@ async fn subscribe_unsubscribe_via_execute_return_error_reply() {
         .execute(Command::Unsubscribe {
             channels: vec!["c".to_owned()],
         })
+        .await
         .expect("execute returns Ok wrapping a Reply::Error");
     assert!(matches!(r2, Reply::Error(_)));
+}
+
+// ── M4.1 (ADR-0011 §#12) — `Store::subscribe` read-then-write-on-miss ──────
+
+#[tokio::test]
+async fn subscribe_on_existing_channel_does_not_block_concurrent_publishes() {
+    // First subscribe creates the channel (escalates to write lock).
+    // Subsequent subscribes hit the read-only fast path — we verify
+    // by observing that a long-running PUBLISH burst from one task
+    // does NOT block a SUBSCRIBE on the same channel from another
+    // task.  Under the M3.2 write-lock-always behaviour the
+    // subscribe would serialise behind the burst.
+    let store = std::sync::Arc::new(Store::new());
+
+    // Bootstrap channel so the SUBSCRIBE inside `task_sub` hits the
+    // read-only branch.
+    let _bootstrap = store.subscribe("hot");
+
+    // Publisher task: 200 publishes back-to-back.
+    let publisher = {
+        let s = store.clone();
+        tokio::spawn(async move {
+            for i in 0..200 {
+                let _ = s
+                    .execute(Command::Publish {
+                        channel: "hot".to_owned(),
+                        message: format!("{i}").into_bytes(),
+                    })
+                    .await
+                    .expect("publish");
+            }
+        })
+    };
+
+    // Subscriber task: race the publisher and grab another receiver.
+    let subscriber = {
+        let s = store.clone();
+        tokio::spawn(async move { s.subscribe("hot") })
+    };
+
+    // Both must complete (with a generous timeout) — if subscribe
+    // was blocked on a writer that's never coming, this would hang.
+    let (sub_res, pub_res) = tokio::time::timeout(Duration::from_secs(2), async {
+        tokio::join!(subscriber, publisher)
+    })
+    .await
+    .expect("subscribe-during-publish must not deadlock");
+    let _rx = sub_res.expect("subscriber task ok");
+    pub_res.expect("publisher task ok");
+
+    // Snapshot must show 2 receivers (bootstrap + new one) — count
+    // independent of fan-out load.
+    let snap = store.pubsub_snapshot();
+    let entry = snap
+        .iter()
+        .find(|(n, _)| n == "hot")
+        .expect("channel must exist");
+    assert_eq!(entry.1, 2, "two receivers expected, got {}", entry.1);
+}
+
+#[tokio::test]
+async fn subscribe_miss_path_still_inserts_channel() {
+    // Sanity: the read-then-write path must still create the
+    // channel on first subscribe.
+    let store = Store::new();
+    assert!(store.pubsub_snapshot().is_empty());
+    let _rx = store.subscribe("brand-new");
+    let snap = store.pubsub_snapshot();
+    assert_eq!(snap, vec![("brand-new".to_owned(), 1)]);
 }

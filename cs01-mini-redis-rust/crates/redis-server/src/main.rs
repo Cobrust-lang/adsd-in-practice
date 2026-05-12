@@ -25,6 +25,16 @@
 //!      §"Replay 期间 accept" decision)
 //!
 //! When `--aof` is omitted the server is in-memory only (M3.1 behaviour).
+//!
+//! Wave M4.1 (ADR-0011) — security + hardening:
+//! - Default bind is now `127.0.0.1`; bind to all interfaces with
+//!   `--bind 0.0.0.0` only when fronted by AUTH / TLS / a trusted
+//!   reverse proxy.  `--insecure-no-auth` is required to acknowledge
+//!   the AUTH gap when binding to non-loopback addresses.
+//! - `--max-clients <N>` caps concurrent RESP connections (default
+//!   matches the cs01 SLO 1000).
+//! - `--aof-fsync alwaysblocking` provides synchronous-durability
+//!   semantics for callers that need "reply ⇒ on disk".
 
 #![forbid(unsafe_code)]
 
@@ -33,7 +43,7 @@ use std::path::PathBuf;
 
 use clap::Parser;
 use redis_server::server::DEFAULT_MAX_FRAME_SIZE;
-use redis_server::state::AppState;
+use redis_server::state::{AppState, DEFAULT_MAX_CLIENTS};
 use redis_storage::{FsyncPolicy, Store};
 
 #[derive(Parser, Debug)]
@@ -43,8 +53,11 @@ struct Args {
     #[arg(long, default_value_t = 6380)]
     port: u16,
 
-    /// RESP TCP bind address (shared by RESP + HTTP listener)
-    #[arg(long, default_value = "0.0.0.0")]
+    /// RESP TCP bind address (shared by RESP + HTTP listener).
+    /// Defaults to `127.0.0.1` for safety — pass `--bind 0.0.0.0`
+    /// explicitly to expose to the LAN.  Combine with
+    /// `--insecure-no-auth` to acknowledge the AUTH gap.
+    #[arg(long, default_value = "127.0.0.1")]
     bind: String,
 
     /// HTTP control-plane port.  Set to 0 to disable the HTTP
@@ -60,9 +73,12 @@ struct Args {
     aof: Option<PathBuf>,
 
     /// fsync cadence for the AOF writer.  One of `always` /
-    /// `everysec` / `no` (matches Redis' `appendfsync`).  Default
-    /// `everysec` (1 Hz background flush).  Ignored when `--aof`
-    /// is not provided.
+    /// `alwaysblocking` / `everysec` / `no`.  `always` and
+    /// `alwaysblocking` both fsync on every record; `alwaysblocking`
+    /// additionally waits for the fsync before returning the reply
+    /// (use when "reply received ⇒ command durable" is required).
+    /// Default `everysec` (1 Hz background flush).  Ignored when
+    /// `--aof` is not provided.
     #[arg(long, default_value = "everysec")]
     aof_fsync: String,
 
@@ -71,6 +87,22 @@ struct Args {
     /// Matches Redis' `proto-max-bulk-len` (default 512 MiB).
     #[arg(long, default_value_t = DEFAULT_MAX_FRAME_SIZE as u64)]
     max_frame_size: u64,
+
+    /// Maximum number of concurrent RESP connections (M4.1, ADR-0011 #2).
+    /// New clients beyond this ceiling receive
+    /// `-ERR max number of clients reached\r\n` and are dropped before
+    /// a per-conn task is spawned.  Default matches the cs01 SLO
+    /// (`docs/agent/cs01 CLAUDE.md §5`).
+    #[arg(long, default_value_t = DEFAULT_MAX_CLIENTS)]
+    max_clients: usize,
+
+    /// Acknowledge that this build does not implement AUTH and that
+    /// the operator is binding to a public address knowingly
+    /// (M4.1, ADR-0011 #1).  Pure documentation flag — does not
+    /// disable any check; it only emits a startup warning to make
+    /// the AUTH gap visible in operator logs.  AUTH lands in v0.2.
+    #[arg(long, default_value_t = false)]
+    insecure_no_auth: bool,
 }
 
 #[tokio::main]
@@ -107,8 +139,20 @@ async fn main() -> anyhow::Result<()> {
         aof = ?args.aof,
         aof_fsync = ?fsync_policy,
         max_frame_size,
-        "mini-redis-server starting (M3.2)"
+        max_clients = args.max_clients,
+        "mini-redis-server starting (M4.1)"
     );
+
+    // ADR-0011 §#1: explicit warning when AUTH is not in place.  We
+    // do NOT block the run; this is "loud-but-permissive" so the
+    // operator sees the gap in their logs.  The flag itself does
+    // nothing else — AUTH lands at v0.2.
+    if args.insecure_no_auth {
+        tracing::warn!(
+            "Starting WITHOUT authentication. Do not expose to public networks. \
+             AUTH command lands at v0.2."
+        );
+    }
 
     // ── AOF replay-before-bind (ADR-0010 §"Replay 期间 accept") ──────────
     let store = if let Some(aof_path) = args.aof.as_ref() {
@@ -116,7 +160,7 @@ async fn main() -> anyhow::Result<()> {
         // re-executed commands don't extend the file we are reading.
         let store = Store::new();
         if aof_path.exists() {
-            match store.replay_from_path(aof_path) {
+            match store.replay_from_path(aof_path).await {
                 Ok(count) => tracing::info!(
                     replayed = count,
                     path = %aof_path.display(),
@@ -137,17 +181,12 @@ async fn main() -> anyhow::Result<()> {
                 "AOF path does not yet exist — starting empty (will be created on first write)"
             );
         }
-        // Build a writer-equipped store and *copy* the replayed
-        // map into it.  `Store::with_aof` builds its own fresh
-        // `Inner`, so we replay AGAIN into the new store -- but
-        // since replay is idempotent for the writable subset, we
-        // instead seed the new store by re-using `store.inner`.
-        // Simpler: keep `store` and graft on an AofWriter directly.
+        // Graft the AofWriter onto the just-replayed store; the writer task only owns the new file handle and shares the existing inner map via Arc.
         store.attach_aof(aof_path.clone(), fsync_policy).await?
     } else {
         Store::new()
     };
-    let state = AppState::new(store, max_frame_size);
+    let state = AppState::new_with_limits(store, max_frame_size, args.max_clients);
 
     // RESP listener — always on.
     let resp_state = state.clone();

@@ -47,6 +47,25 @@ async fn spawn_server_with_limit(max_frame_size: usize) -> (u16, JoinHandle<std:
     (port, handle)
 }
 
+/// Spawn a server with both `max_frame_size` and a `max_clients`
+/// override.  Used by the M4.1 (ADR-0011 §#2) reject-when-over-cap
+/// e2e tests.
+async fn spawn_server_with_max_clients(
+    max_clients: usize,
+) -> (u16, JoinHandle<std::io::Result<()>>) {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind 127.0.0.1:0");
+    let port = listener.local_addr().expect("local_addr").port();
+    let state = redis_server::state::AppState::new_with_limits(
+        Store::new(),
+        DEFAULT_MAX_FRAME_SIZE,
+        max_clients,
+    );
+    let handle = tokio::spawn(async move { server::run_on(listener, state).await });
+    (port, handle)
+}
+
 /// Open a fresh client socket to `port`.
 async fn connect(port: u16) -> TcpStream {
     TcpStream::connect(("127.0.0.1", port))
@@ -860,6 +879,7 @@ async fn spawn_server_with_aof(
     let store = Store::new();
     let count = store
         .replay_from_path(&path)
+        .await
         .expect("replay_from_path during e2e setup");
     if count > 0 {
         // Tracing isn't initialised in tests; print so the harness
@@ -970,9 +990,15 @@ async fn replay_does_not_inflate_commands_total() {
         ] {
             sock.write_all(cmd).await.expect("write cmd");
         }
-        // Drain replies (each is short).
-        let mut buf = vec![0u8; 256];
-        let _ = sock.read(&mut buf).await;
+        // Drain replies deterministically: 3 replies = `+OK\r\n:1\r\n:2\r\n`
+        // = 14 bytes.  `read_exact` ensures all 3 commands have been
+        // processed by handle_conn (and therefore their AOF Append
+        // messages queued) BEFORE we call aof_flush below — without
+        // this, a `sock.read(...)` returning after only the first
+        // reply would race the flush past partially-queued appends.
+        let want_replies = b"+OK\r\n:1\r\n:2\r\n";
+        let got = read_exact_n(&mut sock, want_replies.len()).await;
+        assert_eq!(got, want_replies, "all 3 replies must arrive before flush");
         store.aof_flush().await;
         srv.abort();
     }
@@ -982,7 +1008,7 @@ async fn replay_does_not_inflate_commands_total() {
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let _port = listener.local_addr().expect("local_addr").port();
     let s = Store::new();
-    let count = s.replay_from_path(&temp.path).expect("replay");
+    let count = s.replay_from_path(&temp.path).await.expect("replay");
     assert_eq!(count, 3, "phase 2 replayed all 3 commands");
     let s = s
         .attach_aof(temp.path.clone(), FsyncPolicy::Always)
@@ -998,4 +1024,142 @@ async fn replay_does_not_inflate_commands_total() {
     );
     // And the keys are still in the store.
     assert_eq!(snap.keys_active, 2, "k + c");
+}
+
+// ── M4.1 (ADR-0011 §#2) — `--max-clients` reject ────────────────────────────
+
+/// With `--max-clients 3`, a 4th client must get
+/// `-ERR max number of clients reached\r\n` and EOF.
+#[tokio::test]
+async fn max_clients_reject_fourth_connection() {
+    let (port, srv) = spawn_server_with_max_clients(3).await;
+
+    // Open 3 long-lived clients and issue PING + read +PONG so the
+    // server has definitely incremented `connections_active` for
+    // each (ConnGuard fires on entry to handle_conn).
+    let mut s1 = connect(port).await;
+    let mut s2 = connect(port).await;
+    let mut s3 = connect(port).await;
+    for s in [&mut s1, &mut s2, &mut s3] {
+        s.write_all(b"*1\r\n$4\r\nPING\r\n")
+            .await
+            .expect("write PING");
+        let pong = read_exact_n(s, b"+PONG\r\n".len()).await;
+        assert_eq!(pong, b"+PONG\r\n");
+    }
+
+    // 4th client — should see the reject error then EOF.
+    let mut s4 = connect(port).await;
+    let buf = read_to_end(&mut s4).await;
+    assert_eq!(
+        buf, b"-ERR max number of clients reached\r\n",
+        "4th client must get verbatim max-clients error"
+    );
+
+    // The 3 original clients must STILL work — pre-existing
+    // connections are not affected by the cap.
+    s1.write_all(b"*1\r\n$4\r\nPING\r\n")
+        .await
+        .expect("write PING on s1 after reject");
+    let pong = read_exact_n(&mut s1, b"+PONG\r\n".len()).await;
+    assert_eq!(pong, b"+PONG\r\n");
+
+    srv.abort();
+}
+
+/// After a rejected client disconnects (its slot was never taken),
+/// freeing one of the three original slots opens space for a new
+/// client.  Validates that the accept-loop doesn't "leak" rejected
+/// connections into the counter.
+#[tokio::test]
+async fn max_clients_slot_recovery_on_disconnect() {
+    let (port, srv) = spawn_server_with_max_clients(2).await;
+
+    let mut s1 = connect(port).await;
+    s1.write_all(b"*1\r\n$4\r\nPING\r\n").await.expect("ping");
+    let _ = read_exact_n(&mut s1, b"+PONG\r\n".len()).await;
+
+    let mut s2 = connect(port).await;
+    s2.write_all(b"*1\r\n$4\r\nPING\r\n").await.expect("ping");
+    let _ = read_exact_n(&mut s2, b"+PONG\r\n".len()).await;
+
+    // 3rd is rejected.
+    {
+        let mut s3 = connect(port).await;
+        let buf = read_to_end(&mut s3).await;
+        assert_eq!(buf, b"-ERR max number of clients reached\r\n");
+    }
+
+    // Close s1 by issuing QUIT (clean close that triggers ConnGuard drop).
+    s1.write_all(b"*1\r\n$4\r\nQUIT\r\n").await.expect("quit");
+    let _ = read_to_end(&mut s1).await;
+
+    // Wait for the server task to actually run the Drop — the
+    // ConnGuard decrements in handle_conn's stack-unwind.  Yield a
+    // few times to let the runtime tick.
+    for _ in 0..16 {
+        tokio::task::yield_now().await;
+    }
+
+    // Now a new client should be accepted.
+    let mut s4 = connect(port).await;
+    s4.write_all(b"*1\r\n$4\r\nPING\r\n").await.expect("ping");
+    let pong = read_exact_n(&mut s4, b"+PONG\r\n".len()).await;
+    assert_eq!(pong, b"+PONG\r\n", "slot must recover after disconnect");
+
+    srv.abort();
+}
+
+// ── M4.1 (ADR-0011 §#3) — Frame::parse depth-limit at the wire ─────────────
+
+/// 33-level nested array must trigger the parser depth guard and
+/// produce the verbatim `-ERR Protocol error: frame nested too deeply`
+/// error, followed by socket close (matches existing protocol-error
+/// behaviour in `handle_conn`).
+#[tokio::test]
+async fn frame_too_deeply_nested_is_protocol_error() {
+    let (port, srv) = spawn_server().await;
+    let mut sock = connect(port).await;
+
+    // 33 layers of `*1\r\n` + a terminal `+OK\r\n`.
+    let mut buf = Vec::with_capacity(33 * 4 + 5);
+    for _ in 0..33 {
+        buf.extend_from_slice(b"*1\r\n");
+    }
+    buf.extend_from_slice(b"+OK\r\n");
+
+    sock.write_all(&buf).await.expect("write nested");
+    let reply = read_to_end(&mut sock).await;
+    let s = String::from_utf8_lossy(&reply);
+    assert!(
+        s.starts_with("-ERR Protocol error: frame nested too deeply"),
+        "expected depth-limit error, got {s:?}"
+    );
+    assert!(s.ends_with("\r\n"));
+    srv.abort();
+}
+
+// ── M4.1 (ADR-0011 §#10) — wire-level trailing-token rejection ────────────
+
+/// `SET k v EX 60 GARBAGE` must produce verbatim `-ERR syntax error\r\n`
+/// at the wire (matches real Redis).
+#[tokio::test]
+async fn set_with_trailing_token_rejected_at_wire() {
+    let (port, srv) = spawn_server().await;
+    let mut sock = connect(port).await;
+    sock.write_all(
+        b"*6\r\n$3\r\nSET\r\n$1\r\nk\r\n$1\r\nv\r\n$2\r\nEX\r\n$2\r\n60\r\n$7\r\nGARBAGE\r\n",
+    )
+    .await
+    .expect("write SET");
+    let want = b"-ERR syntax error\r\n";
+    let got = read_exact_n(&mut sock, want.len()).await;
+    assert_eq!(got, want);
+    // Connection survives — the dispatch error path stays open.
+    sock.write_all(b"*1\r\n$4\r\nPING\r\n")
+        .await
+        .expect("PING after");
+    let pong = read_exact_n(&mut sock, b"+PONG\r\n".len()).await;
+    assert_eq!(pong, b"+PONG\r\n");
+    srv.abort();
 }

@@ -1,7 +1,7 @@
 //! In-memory KV store + TTL + AOF persistence.
 //!
 //! No network IO; this crate is pure storage. The server crate calls
-//! `Store::execute(cmd) -> Reply` per request.
+//! `Store::execute(cmd).await -> Reply` per request.
 //!
 //! Internal layout (ADR-0003):
 //! - `Arc<parking_lot::RwLock<Inner>>` for cheap clone + fast concurrent reads.
@@ -15,6 +15,19 @@
 //! - [`Store::replay_from_path`] replays an existing AOF file into the
 //!   store *before* the AOF writer is wired in, so re-execution does
 //!   not duplicate the file.
+//!
+//! M4.1 (ADR-0011) hardening (wave-internal API break):
+//! - [`Store::execute`] and [`Store::execute_no_aof`] are now
+//!   `pub async fn`.  Callers are all in async contexts; the change
+//!   is needed so the optional AOF write path can `.await` on
+//!   bounded-mpsc backpressure (#8) and on `AlwaysBlocking` durability
+//!   confirmation (#7).
+//! - [`Store::replay_from_path`] is now `pub async fn` and streams
+//!   the AOF file via `tokio::fs::File + BufReader` instead of
+//!   loading the entire file into memory (#9).
+//! - [`Store::subscribe`] reads the per-channel sender under a read
+//!   lock and only escalates to a write lock on first-subscribe
+//!   (#12), avoiding write-lock contention on hot channels.
 
 #![forbid(unsafe_code)]
 
@@ -34,6 +47,7 @@ use hashbrown::HashMap;
 use parking_lot::RwLock;
 use redis_protocol::{Frame, ProtocolError};
 use thiserror::Error;
+use tokio::io::AsyncReadExt as _;
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
 use tokio_util::time::DelayQueue;
@@ -367,10 +381,13 @@ impl Store {
 
     /// Replay a RESP-encoded AOF file into the store.
     ///
-    /// Iterates the file's bytes with [`Frame::parse`], converts each
-    /// `Array` frame into a [`Command`], and re-executes it via the
-    /// AOF-skipping path ([`Store::execute_no_aof`]) so the same file
-    /// is not re-extended during replay.
+    /// M4.1 (ADR-0011 §#9): streams the file via
+    /// `tokio::fs::File + BufReader`, parsing frames incrementally
+    /// against a growing `BytesMut` and dropping completed prefixes
+    /// via `Buf::advance`.  Memory footprint is bounded by the
+    /// largest in-flight frame plus one read-buffer (`READ_CHUNK`),
+    /// not by the file size — this is the M4.1 prod-grade fix for
+    /// the audit's MED-1/MED-4 (M3.2 read-the-whole-file pattern).
     ///
     /// Behaviour for malformed inputs:
     /// - `Frame::parse` returning `Incomplete` at end-of-file is
@@ -399,31 +416,73 @@ impl Store {
     /// reading the file (permission denied, mid-read EOF on a real
     /// disk failure).  Format errors do NOT propagate — they are
     /// logged and treated as truncations per the policy above.
-    pub fn replay_from_path(&self, path: &Path) -> Result<usize, StoreError> {
-        if !path.exists() {
-            return Ok(0);
-        }
-        let bytes = std::fs::read(path)?;
-        let mut buf: BytesMut = BytesMut::with_capacity(bytes.len());
-        buf.extend_from_slice(&bytes);
+    pub async fn replay_from_path(&self, path: &Path) -> Result<usize, StoreError> {
+        /// Streaming chunk size — 64 KiB balances syscall overhead
+        /// against memory footprint for large AOFs.
+        const READ_CHUNK: usize = 64 * 1024;
 
+        // `tokio::fs::File::open` returns `NotFound` for absent
+        // paths; preserve the M3.2 "empty AOF is OK" contract.
+        match tokio::fs::metadata(path).await {
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+            Err(e) => return Err(StoreError::Io(e)),
+        }
+
+        let file = tokio::fs::File::open(path).await?;
+        let mut reader = tokio::io::BufReader::with_capacity(READ_CHUNK, file);
+        let mut buf: BytesMut = BytesMut::with_capacity(READ_CHUNK);
         let mut count: usize = 0;
+        let mut eof = false;
+
         loop {
+            // Pull more bytes when we either have none or the parser
+            // says the buffered prefix is incomplete.  We loop here
+            // so a single fat frame larger than `READ_CHUNK` still
+            // parses (BytesMut grows; the prefix advances in place).
+            while !eof {
+                let prev_len = buf.len();
+                // `read_buf` extends `buf` up to its remaining
+                // capacity; reserve a chunk if we've consumed the
+                // grown region.
+                if buf.capacity() - buf.len() < READ_CHUNK {
+                    buf.reserve(READ_CHUNK);
+                }
+                let n = reader.read_buf(&mut buf).await?;
+                if n == 0 {
+                    eof = true;
+                }
+                if !eof && buf.len() == prev_len {
+                    // Defensive: a 0-byte read without EOF would
+                    // spin; treat as EOF to be safe.
+                    eof = true;
+                }
+                // Try the parser once per pull so small frames hit
+                // the fast path; the outer loop will refill if the
+                // parser reports Incomplete.
+                if buf.is_empty() {
+                    break;
+                }
+                match Frame::parse(&buf[..]) {
+                    // Either a complete frame is buffered OR we hit a
+                    // hard error / EOF-truncated tail — let the outer
+                    // match decide how to act.  `Incomplete && !eof`
+                    // is the only case that needs another pull.
+                    Err(ProtocolError::Incomplete) if !eof => {
+                        // Continue inner read loop.
+                    }
+                    _ => break,
+                }
+            }
+
+            if buf.is_empty() {
+                break;
+            }
+
             match Frame::parse(&buf[..]) {
                 Ok((frame, n)) => {
-                    // Convert the frame to a command using the same
-                    // case-insensitive lookup the dispatch layer uses
-                    // — but the dispatch crate lives upstream of us.
-                    // Inline a tiny parser specialised for the 6
-                    // writable verbs (ADR-0010 §"writable command
-                    // set"); anything else is silently skipped so
-                    // hand-edited AOFs with GET / TYPE / etc. don't
-                    // crash replay.
                     if let Some(cmd) = parse_writable_frame(&frame) {
-                        // execute_no_aof is infallible for the
-                        // writable subset (no IO, just map ops).
-                        // Errors here would mean a logic bug.
-                        let _ = self.execute_no_aof(cmd);
+                        let _ = self.execute_no_aof(cmd).await;
                         count += 1;
                     } else {
                         tracing::debug!("AOF replay: skipping non-writable / unparseable frame");
@@ -431,12 +490,11 @@ impl Store {
                     buf.advance(n);
                 }
                 Err(ProtocolError::Incomplete) => {
-                    if !buf.is_empty() {
-                        tracing::warn!(
-                            tail_bytes = buf.len(),
-                            "AOF replay: truncated tail; ignoring remaining bytes"
-                        );
-                    }
+                    // Reached only when `eof == true`; truncated tail.
+                    tracing::warn!(
+                        tail_bytes = buf.len(),
+                        "AOF replay: truncated tail; ignoring remaining bytes"
+                    );
                     break;
                 }
                 Err(ProtocolError::Invalid(msg)) => {
@@ -468,11 +526,16 @@ impl Store {
     /// the append.  When no AOF writer is configured (i.e.
     /// [`Store::new`] build), this is a thin wrapper.
     ///
+    /// M4.1 (ADR-0011 #7 + #8): `async fn` so the AOF write path can
+    /// (a) backpressure on the bounded mpsc when the writer task is
+    /// behind and (b) wait for `sync_data` under
+    /// [`FsyncPolicy::AlwaysBlocking`].
+    ///
     /// # Errors
     ///
     /// Returns `StoreError` on internal IO or invariant violation.
     /// "Key not found" maps to `Reply::Bulk(None)`, not an error.
-    pub fn execute(&self, cmd: Command) -> Result<Reply, StoreError> {
+    pub async fn execute(&self, cmd: Command) -> Result<Reply, StoreError> {
         // Encode FIRST so we don't consume `cmd` before we can both
         // run it and emit it.  `aof_encode` is allocation-light
         // (one Vec<Frame> + a single to_bytes pass) and returns
@@ -480,7 +543,7 @@ impl Store {
         // negligible for the read-only hot path.
         let encoded = self.aof.as_ref().and_then(|_| aof_encode(&cmd));
 
-        let reply = self.execute_no_aof(cmd)?;
+        let reply = self.execute_no_aof(cmd).await?;
 
         // Only append if the in-memory mutation succeeded AND the
         // reply is not an `Error` (e.g. INCR on a non-integer string
@@ -489,7 +552,18 @@ impl Store {
         if let (Some(writer), Some(bytes), false) =
             (self.aof.as_ref(), encoded, matches!(reply, Reply::Error(_)))
         {
-            writer.append(bytes);
+            // ADR-0011 #7: AlwaysBlocking waits for the writer task
+            // to confirm fsync BEFORE returning the reply to the
+            // caller; every other cadence is fire-and-forget on the
+            // writer side (the writer task still fsyncs per its
+            // configured policy — Always async, Everysec batched,
+            // No left to the OS).
+            match writer.policy() {
+                FsyncPolicy::AlwaysBlocking => writer.append_blocking(bytes).await,
+                FsyncPolicy::Always | FsyncPolicy::Everysec | FsyncPolicy::No => {
+                    writer.append(bytes).await;
+                }
+            }
         }
 
         Ok(reply)
@@ -501,10 +575,15 @@ impl Store {
     /// so replay does not re-extend the file it just read.  Identical
     /// semantics to [`Store::execute`] except the AOF append is skipped.
     ///
+    /// M4.1: `async fn` to mirror [`Store::execute`]'s signature; the
+    /// body itself is sync (in-memory map ops only) but the future
+    /// shape must match so callers can write a single `await` chain.
+    ///
     /// # Errors
     ///
     /// Same shape as [`Store::execute`].
-    pub fn execute_no_aof(&self, cmd: Command) -> Result<Reply, StoreError> {
+    #[allow(clippy::unused_async)] // ADR-0011 §#7: signature parity with execute()
+    pub async fn execute_no_aof(&self, cmd: Command) -> Result<Reply, StoreError> {
         match cmd {
             Command::Ping { message } => match message {
                 // `PING` with no message → `+PONG\r\n`.
@@ -636,11 +715,28 @@ impl Store {
     /// [`PUBSUB_BROADCAST_CAPACITY`] on first subscribe; subsequent
     /// subscribers share the same `Sender`.
     ///
-    /// Takes the inner write lock briefly (one hashmap lookup +
-    /// possible insert).  Caller is expected to hold the returned
-    /// `Receiver` for as long as the connection is subscribed.
+    /// M4.1 (ADR-0011 §#12): the common case — an existing channel —
+    /// only acquires a *read* lock, so SUBSCRIBE on a hot channel
+    /// does not contend with concurrent GETs/PUBLISHes that also
+    /// take read locks.  The write lock is escalated to only on the
+    /// miss path, with a re-check under the write guard to handle
+    /// the ABA window where another caller inserted between our
+    /// read drop and write acquire.
+    ///
+    /// Caller is expected to hold the returned `Receiver` for as
+    /// long as the connection is subscribed.
     #[must_use]
     pub fn subscribe(&self, channel: &str) -> tokio::sync::broadcast::Receiver<Arc<Vec<u8>>> {
+        // Fast path — existing channel.  `parking_lot::RwLock::read`
+        // is uncontended cheap when no writers are pending.
+        {
+            let guard = self.inner.read();
+            if let Some(tx) = guard.subscribers.get(channel) {
+                return tx.subscribe();
+            }
+        }
+        // Miss path — promote to write lock and re-check (another
+        // caller may have inserted in the gap).
         let mut guard = self.inner.write();
         let tx = guard
             .subscribers
@@ -966,6 +1062,7 @@ mod tests {
         let s = Store::new();
         let r = s
             .execute(Command::Ping { message: None })
+            .await
             .expect("ping infallible");
         assert_eq!(r, Reply::Pong);
     }
@@ -977,6 +1074,7 @@ mod tests {
             .execute(Command::Ping {
                 message: Some(b"hello".to_vec()),
             })
+            .await
             .expect("ping infallible");
         assert_eq!(r, Reply::Bulk(Some(b"hello".to_vec())));
     }

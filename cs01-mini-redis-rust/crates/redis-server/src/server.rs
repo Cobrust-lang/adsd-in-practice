@@ -28,18 +28,19 @@
 //!   except (P)SUBSCRIBE / (P)UNSUBSCRIBE / PING / QUIT / RESET with
 //!   the verbatim Redis 7 error string.
 
-use std::collections::HashMap;
 use std::io;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use bytes::{Buf, BytesMut};
+use futures_util::StreamExt as _;
 use redis_protocol::{Frame, ProtocolError};
 use redis_storage::{Command, Reply};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::broadcast;
+use tokio_stream::StreamMap;
+use tokio_stream::wrappers::{BroadcastStream, errors::BroadcastStreamRecvError};
 
 use crate::dispatch::from_frame;
 use crate::encode::reply_to_frame;
@@ -104,7 +105,38 @@ pub async fn run_on(listener: TcpListener, state: AppState) -> io::Result<()> {
         tokio::select! {
             accept = listener.accept() => {
                 match accept {
-                    Ok((socket, peer)) => {
+                    Ok((mut socket, peer)) => {
+                        // M4.1 (ADR-0011 §#2): cap concurrent
+                        // connections.  The counter is incremented
+                        // inside `handle_conn` via `ConnGuard`, so
+                        // at the moment of `accept` it accurately
+                        // reflects the live count.  Over-limit
+                        // clients get the verbatim Redis-style error
+                        // and an immediate close — no per-conn task
+                        // is spawned, so they cost ~one syscall pair.
+                        // On a 64-bit target this is lossless; on a
+                        // 32-bit target the saturating fallback keeps
+                        // the comparison conservative (saturated MAX
+                        // forces the reject path under truncation, so
+                        // we never under-cap clients silently).
+                        let active = usize::try_from(
+                            state.connections_active.load(Ordering::Relaxed),
+                        )
+                        .unwrap_or(usize::MAX);
+                        if active >= state.max_clients {
+                            tracing::warn!(
+                                peer = %peer,
+                                active,
+                                max = state.max_clients,
+                                "rejecting connection — max-clients reached"
+                            );
+                            let _ = socket
+                                .write_all(b"-ERR max number of clients reached\r\n")
+                                .await;
+                            // `socket` drops at scope-end and closes
+                            // the TCP connection cleanly.
+                            continue;
+                        }
                         let state = state.clone();
                         tokio::spawn(async move {
                             if let Err(e) = handle_conn(socket, state).await {
@@ -133,25 +165,30 @@ pub async fn run_on(listener: TcpListener, state: AppState) -> io::Result<()> {
 /// (default state for any newly-accepted socket).
 ///
 /// `Subscribed` — the connection is in "sub mode": one or more
-/// `SUBSCRIBE` commands have registered receivers in `rxs`, and the
-/// dispatch wall rejects everything except (P)SUBSCRIBE / (P)UNSUBSCRIBE
-/// / PING / QUIT / RESET.  Sub-mode → Normal transition fires exactly
-/// when the last receiver is removed via UNSUBSCRIBE.
+/// `SUBSCRIBE` commands have registered receivers in `streams`, and
+/// the dispatch wall rejects everything except (P)SUBSCRIBE /
+/// (P)UNSUBSCRIBE / PING / QUIT / RESET.  Sub-mode → Normal
+/// transition fires exactly when the last receiver is removed via
+/// UNSUBSCRIBE.
 ///
-/// We model this as an enum (rather than a `bool + Option<HashMap>`)
-/// to make the two states distinguishable in `match` arms — the
+/// We model this as an enum (rather than a `bool + Option<…>`) to
+/// make the two states distinguishable in `match` arms — the
 /// compiler then enforces wall-coverage rather than relying on us
 /// remembering to check both `is_some` and `subscribed_flag`.
+///
+/// M4.1 (ADR-0011 §#11): `Subscribed.streams` is now a
+/// [`StreamMap`] held *across* `tokio::select!` iterations instead
+/// of a per-iteration `Vec<BoxFuture>`.  This avoids the M3.2 hot-
+/// loop boxing (Aleksandr concern #1) and is the idiomatic way to
+/// race multiple `broadcast::Receiver`s with named keys.
 enum ConnState {
     Normal,
     Subscribed {
-        /// Per-channel broadcast receivers.  Ordered insertion in a
-        /// `Vec<(String, …)>` would let us preserve subscribe ordering
-        /// for the sake of ack frame ordering, but the per-channel ack
-        /// is emitted *at SUBSCRIBE time* — `rxs` only needs to map
-        /// channel → receiver for select-time fan-in.  `HashMap` is
-        /// fine (and removes the O(N) unsubscribe walk).
-        rxs: HashMap<String, broadcast::Receiver<Arc<Vec<u8>>>>,
+        /// Per-channel broadcast receivers wrapped in
+        /// `BroadcastStream` so they live in a `StreamMap`.  The key
+        /// is the channel name; subscribing inserts and unsubscribing
+        /// removes.
+        streams: StreamMap<String, BroadcastStream<Arc<Vec<u8>>>>,
     },
 }
 
@@ -164,7 +201,7 @@ impl ConnState {
     fn subscription_count(&self) -> usize {
         match self {
             ConnState::Normal => 0,
-            ConnState::Subscribed { rxs } => rxs.len(),
+            ConnState::Subscribed { streams } => streams.len(),
         }
     }
 }
@@ -265,7 +302,7 @@ async fn handle_conn(mut socket: TcpStream, state: AppState) -> io::Result<()> {
                             if matches!(cmd, Command::Quit) {
                                 close_after = true;
                             }
-                            handle_command(&state, &mut conn_state, cmd)
+                            handle_command(&state, &mut conn_state, cmd).await
                         }
                         Err(reply) => vec![reply],
                     };
@@ -310,57 +347,39 @@ enum SubRecvError {
     Lagged,
 }
 
-/// Race over every subscribed channel's `broadcast::Receiver`.  Returns
-/// the (channel, payload) of whichever channel produced the next
-/// message, or `SubRecvError::Lagged` if any receiver fell behind.
+/// Race over every subscribed channel's [`BroadcastStream`].
 ///
-/// In `Normal` mode this future is `Pending` forever — the caller's
-/// `tokio::select!` will always favour the socket read arm.
+/// M4.1 (ADR-0011 §#11): the state machine holds a [`StreamMap`]
+/// across `tokio::select!` iterations.  `StreamMap::next` polls every
+/// inner stream in `O(n_subscriptions)` per wake-up without per-poll
+/// boxing — this is the recommended pattern in `tokio-stream` docs.
+/// Returns the (channel, payload) of whichever channel produced the
+/// next message, or `SubRecvError::Lagged` if any receiver fell behind.
 ///
-/// Borrow-checker note: we can't build a `Vec<BoxFuture<…>>` over
-/// `rxs` because each future would borrow the underlying receiver, and
-/// the Vec would simultaneously alias N mutable borrows.  Instead, we
-/// build a single composed future via `iter_mut().map(|(name, rx)| …)`
-/// plus `select_all` — `iter_mut` returns disjoint `&mut` references
-/// in one chain so the borrow checker is happy.
+/// In `Normal` mode (or `Subscribed` with an empty map) this future is
+/// `Pending` forever — the caller's `tokio::select!` always favours
+/// the socket read arm.
 async fn recv_any_subscription(
     state: &mut ConnState,
 ) -> Result<(String, Arc<Vec<u8>>), SubRecvError> {
     match state {
         ConnState::Normal => std::future::pending().await,
-        ConnState::Subscribed { rxs } => {
-            use futures_util::future::FutureExt as _;
-            if rxs.is_empty() {
-                // Transient state during unsubscribe-all → Normal
-                // transition; treat as pending so the caller hits the
-                // read arm.
-                std::future::pending().await
-            } else {
-                // Pair each receiver's `recv()` future with its channel
-                // name (cloned, since the future owns its name copy).
-                // `iter_mut` yields disjoint `&mut` borrows, so the
-                // resulting Vec doesn't alias the map.
-                let futures: Vec<_> = rxs
-                    .iter_mut()
-                    .map(|(name, rx)| {
-                        let name = name.clone();
-                        async move { (name, rx.recv().await) }.boxed()
-                    })
-                    .collect();
-                let ((channel, result), _idx, _rest) =
-                    futures_util::future::select_all(futures).await;
-                match result {
-                    Ok(payload) => Ok((channel, payload)),
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                        Err(SubRecvError::Lagged)
+        ConnState::Subscribed { streams } => {
+            // `StreamMap::next` returns Pending until at least one
+            // inner stream is ready; an empty map yields None
+            // immediately, which we convert back to Pending so the
+            // outer `select!` doesn't busy-loop during the brief
+            // unsubscribe-all → Normal transition.
+            loop {
+                match streams.next().await {
+                    Some((channel, Ok(payload))) => return Ok((channel, payload)),
+                    Some((_channel, Err(BroadcastStreamRecvError::Lagged(_)))) => {
+                        return Err(SubRecvError::Lagged);
                     }
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                        // The Sender side dropped — only possible if
-                        // the Store itself is being torn down, which
-                        // shouldn't happen mid-conn.  Return Pending
-                        // forever — the conn will close on the next
-                        // socket activity / EOF.
-                        std::future::pending().await
+                    None => {
+                        // Map became empty (no subscriptions); fall
+                        // back to Pending so the read arm fires next.
+                        std::future::pending::<()>().await;
                     }
                 }
             }
@@ -373,7 +392,10 @@ async fn recv_any_subscription(
 /// Returns 1..N `Reply` values that the caller flushes in order.
 /// SUBSCRIBE / UNSUBSCRIBE emit one ack per channel; everything else
 /// produces exactly one reply.
-fn handle_command(state: &AppState, conn_state: &mut ConnState, cmd: Command) -> Vec<Reply> {
+///
+/// M4.1 (ADR-0011 §#7 + #8): `async fn` so the store call can
+/// `.await` on AOF backpressure or `AlwaysBlocking` confirmation.
+async fn handle_command(state: &AppState, conn_state: &mut ConnState, cmd: Command) -> Vec<Reply> {
     // Sub-mode command-filter wall (ADR-0009 §Q4 watch-out): in
     // Subscribed mode, accept only the allow-list.  Error string is
     // verbatim Redis 7.
@@ -401,7 +423,7 @@ fn handle_command(state: &AppState, conn_state: &mut ConnState, cmd: Command) ->
 
         // Everything else goes through the store.
         other => {
-            let r = match state.store.execute(other) {
+            let r = match state.store.execute(other).await {
                 Ok(r) => r,
                 Err(e) => Reply::Error(format!("ERR internal: {e}")),
             };
@@ -447,10 +469,10 @@ fn handle_subscribe(
     // Transition Normal → Subscribed lazily.
     if !conn_state.is_subscribed() {
         *conn_state = ConnState::Subscribed {
-            rxs: HashMap::new(),
+            streams: StreamMap::new(),
         };
     }
-    let ConnState::Subscribed { rxs } = conn_state else {
+    let ConnState::Subscribed { streams } = conn_state else {
         // Just-set above; this branch is provably unreachable.
         return Vec::new();
     };
@@ -461,11 +483,11 @@ fn handle_subscribe(
         // channel per client; if already subscribed, the running
         // count does NOT change and a fresh ack is still emitted with
         // the current count.
-        if !rxs.contains_key(channel) {
+        if !streams.contains_key(channel) {
             let rx = state.store.subscribe(channel);
-            rxs.insert(channel.clone(), rx);
+            streams.insert(channel.clone(), BroadcastStream::new(rx));
         }
-        let count = i64::try_from(rxs.len()).unwrap_or(i64::MAX);
+        let count = i64::try_from(streams.len()).unwrap_or(i64::MAX);
         out.push(Reply::SubscribeAck {
             channel: channel.clone(),
             count,
@@ -488,7 +510,7 @@ fn handle_unsubscribe(conn_state: &mut ConnState, channels: &[String]) -> Vec<Re
     }
 
     // SAFETY: just guarded above with is_subscribed().
-    let ConnState::Subscribed { rxs } = conn_state else {
+    let ConnState::Subscribed { streams } = conn_state else {
         return Vec::new();
     };
 
@@ -497,7 +519,7 @@ fn handle_unsubscribe(conn_state: &mut ConnState, channels: &[String]) -> Vec<Re
         // UNSUBSCRIBE (no args) — every currently-subscribed channel,
         // in some deterministic-ish order.  Use insertion-style sort
         // so test snapshots are stable.
-        let mut all: Vec<String> = rxs.keys().cloned().collect();
+        let mut all: Vec<String> = streams.keys().cloned().collect();
         all.sort();
         all
     } else {
@@ -508,8 +530,8 @@ fn handle_unsubscribe(conn_state: &mut ConnState, channels: &[String]) -> Vec<Re
     for channel in &targets {
         // Drop the receiver if present.  If the channel was not
         // subscribed, Redis still emits an ack with the current count.
-        rxs.remove(channel);
-        let count = i64::try_from(rxs.len()).unwrap_or(i64::MAX);
+        streams.remove(channel);
+        let count = i64::try_from(streams.len()).unwrap_or(i64::MAX);
         out.push(Reply::UnsubscribeAck {
             channel: Some(channel.clone()),
             count,

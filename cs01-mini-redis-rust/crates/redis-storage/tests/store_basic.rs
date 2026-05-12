@@ -19,6 +19,7 @@ async fn set_returns_ok() {
             value: b"v".to_vec(),
             ttl_secs: None,
         })
+        .await
         .expect("set infallible");
     assert_eq!(reply, Reply::Ok);
 }
@@ -35,11 +36,13 @@ async fn get_existing_key() {
             value: b"alice".to_vec(),
             ttl_secs: None,
         })
+        .await
         .expect("set");
     let reply = store
         .execute(Command::Get {
             key: "name".to_owned(),
         })
+        .await
         .expect("get");
     assert_eq!(reply, Reply::Bulk(Some(b"alice".to_vec())));
 }
@@ -51,6 +54,7 @@ async fn get_missing_key_returns_nil() {
         .execute(Command::Get {
             key: "no-such-key".to_owned(),
         })
+        .await
         .expect("get");
     assert_eq!(reply, Reply::Bulk(None));
 }
@@ -68,6 +72,7 @@ async fn del_returns_correct_count() {
                 value: b"x".to_vec(),
                 ttl_secs: None,
             })
+            .await
             .expect("set");
     }
     // Delete 2 existing + 1 non-existing → count = 2.
@@ -75,6 +80,7 @@ async fn del_returns_correct_count() {
         .execute(Command::Del {
             keys: vec!["a".to_owned(), "b".to_owned(), "nonexistent".to_owned()],
         })
+        .await
         .expect("del");
     assert_eq!(reply, Reply::Integer(2));
 
@@ -82,6 +88,7 @@ async fn del_returns_correct_count() {
     for k in ["a", "b"] {
         let r = store
             .execute(Command::Get { key: k.to_owned() })
+            .await
             .expect("get");
         assert_eq!(r, Reply::Bulk(None));
     }
@@ -99,12 +106,14 @@ async fn exists_counts_live_keys() {
             value: b"1".to_vec(),
             ttl_secs: None,
         })
+        .await
         .expect("set");
 
     let r = store
         .execute(Command::Exists {
             keys: vec!["live".to_owned(), "dead".to_owned()],
         })
+        .await
         .expect("exists");
     assert_eq!(r, Reply::Integer(1));
 }
@@ -121,11 +130,13 @@ async fn incr_non_integer_value_returns_error() {
             value: b"notanint".to_vec(),
             ttl_secs: None,
         })
+        .await
         .expect("set");
     let reply = store
         .execute(Command::Incr {
             key: "x".to_owned(),
         })
+        .await
         .expect("incr infallible at StoreError level");
     assert_eq!(
         reply,
@@ -140,6 +151,7 @@ async fn incr_missing_key_starts_at_one() {
         .execute(Command::Incr {
             key: "counter".to_owned(),
         })
+        .await
         .expect("incr");
     assert_eq!(reply, Reply::Integer(1));
 
@@ -147,6 +159,7 @@ async fn incr_missing_key_starts_at_one() {
         .execute(Command::Incr {
             key: "counter".to_owned(),
         })
+        .await
         .expect("incr");
     assert_eq!(reply2, Reply::Integer(2));
 }
@@ -160,11 +173,13 @@ async fn decr_existing_key() {
             value: b"10".to_vec(),
             ttl_secs: None,
         })
+        .await
         .expect("set");
     let reply = store
         .execute(Command::Decr {
             key: "n".to_owned(),
         })
+        .await
         .expect("decr");
     assert_eq!(reply, Reply::Integer(9));
 }
@@ -182,6 +197,7 @@ async fn ttl_active_expiration() {
             value: b"value".to_vec(),
             ttl_secs: Some(1),
         })
+        .await
         .expect("set with ttl");
 
     // Key should be alive before expiry.
@@ -189,6 +205,7 @@ async fn ttl_active_expiration() {
         .execute(Command::Get {
             key: "ttlkey".to_owned(),
         })
+        .await
         .expect("get before expiry");
     assert_eq!(before, Reply::Bulk(Some(b"value".to_vec())));
 
@@ -202,6 +219,7 @@ async fn ttl_active_expiration() {
         .execute(Command::Get {
             key: "ttlkey".to_owned(),
         })
+        .await
         .expect("get after expiry");
     assert_eq!(after, Reply::Bulk(None), "key should be gone after TTL");
 }
@@ -215,6 +233,7 @@ async fn echo_returns_message_verbatim() {
         .execute(Command::Echo {
             message: b"hello world".to_vec(),
         })
+        .await
         .expect("echo infallible");
     assert_eq!(reply, Reply::Bulk(Some(b"hello world".to_vec())));
 }
@@ -224,6 +243,7 @@ async fn select_db_zero_is_ok() {
     let store = Store::new();
     let reply = store
         .execute(Command::Select { db: 0 })
+        .await
         .expect("select infallible");
     assert_eq!(reply, Reply::Ok);
 }
@@ -233,6 +253,7 @@ async fn select_non_zero_db_is_error() {
     let store = Store::new();
     let reply = store
         .execute(Command::Select { db: 9 })
+        .await
         .expect("select infallible at StoreError level");
     assert_eq!(
         reply,
@@ -243,7 +264,7 @@ async fn select_non_zero_db_is_error() {
 #[tokio::test(start_paused = true)]
 async fn quit_returns_ok() {
     let store = Store::new();
-    let reply = store.execute(Command::Quit).expect("quit infallible");
+    let reply = store.execute(Command::Quit).await.expect("quit infallible");
     assert_eq!(reply, Reply::Ok);
 }
 
@@ -254,6 +275,7 @@ async fn ping_no_message_returns_pong() {
     let s = Store::new();
     let r = s
         .execute(Command::Ping { message: None })
+        .await
         .expect("ping infallible");
     assert_eq!(r, Reply::Pong);
 }
@@ -265,6 +287,7 @@ async fn ping_with_message_returns_bulk() {
         .execute(Command::Ping {
             message: Some(b"hello".to_vec()),
         })
+        .await
         .expect("ping infallible");
     assert_eq!(r, Reply::Bulk(Some(b"hello".to_vec())));
 }
@@ -280,12 +303,14 @@ async fn expire_existing_key_returns_one() {
             value: b"v".to_vec(),
             ttl_secs: None,
         })
+        .await
         .expect("set");
     let r = store
         .execute(Command::Expire {
             key: "k".to_owned(),
             seconds: 60,
         })
+        .await
         .expect("expire");
     assert_eq!(r, Reply::Integer(1));
 }
@@ -298,6 +323,7 @@ async fn expire_missing_key_returns_zero() {
             key: "nope".to_owned(),
             seconds: 60,
         })
+        .await
         .expect("expire");
     assert_eq!(r, Reply::Integer(0));
 }
@@ -309,6 +335,7 @@ async fn ttl_missing_key_is_minus_two() {
         .execute(Command::Ttl {
             key: "nope".to_owned(),
         })
+        .await
         .expect("ttl");
     assert_eq!(r, Reply::Integer(-2));
 }
@@ -322,11 +349,13 @@ async fn ttl_no_ttl_key_is_minus_one() {
             value: b"v".to_vec(),
             ttl_secs: None,
         })
+        .await
         .expect("set");
     let r = store
         .execute(Command::Ttl {
             key: "k".to_owned(),
         })
+        .await
         .expect("ttl");
     assert_eq!(r, Reply::Integer(-1));
 }
@@ -340,11 +369,13 @@ async fn ttl_with_ttl_key_is_remaining_seconds() {
             value: b"v".to_vec(),
             ttl_secs: Some(100),
         })
+        .await
         .expect("set");
     let r = store
         .execute(Command::Ttl {
             key: "k".to_owned(),
         })
+        .await
         .expect("ttl");
     // Allow ±1s drift per ADR-0006 done criteria (paused-time so we expect 100).
     match r {
@@ -365,11 +396,13 @@ async fn persist_existing_ttl_returns_one_and_clears_ttl() {
             value: b"v".to_vec(),
             ttl_secs: Some(100),
         })
+        .await
         .expect("set");
     let r = store
         .execute(Command::Persist {
             key: "k".to_owned(),
         })
+        .await
         .expect("persist");
     assert_eq!(r, Reply::Integer(1));
     // TTL after PERSIST is -1.
@@ -377,6 +410,7 @@ async fn persist_existing_ttl_returns_one_and_clears_ttl() {
         .execute(Command::Ttl {
             key: "k".to_owned(),
         })
+        .await
         .expect("ttl");
     assert_eq!(after, Reply::Integer(-1));
 }
@@ -390,11 +424,13 @@ async fn persist_no_ttl_returns_zero() {
             value: b"v".to_vec(),
             ttl_secs: None,
         })
+        .await
         .expect("set");
     let r = store
         .execute(Command::Persist {
             key: "k".to_owned(),
         })
+        .await
         .expect("persist");
     assert_eq!(r, Reply::Integer(0));
 }
@@ -406,6 +442,7 @@ async fn persist_missing_key_returns_zero() {
         .execute(Command::Persist {
             key: "nope".to_owned(),
         })
+        .await
         .expect("persist");
     assert_eq!(r, Reply::Integer(0));
 }
@@ -419,12 +456,14 @@ async fn expire_then_advance_makes_key_disappear() {
             value: b"v".to_vec(),
             ttl_secs: None,
         })
+        .await
         .expect("set");
     store
         .execute(Command::Expire {
             key: "k".to_owned(),
             seconds: 1,
         })
+        .await
         .expect("expire");
     tokio::time::advance(Duration::from_millis(1100)).await;
     tokio::task::yield_now().await;
@@ -432,6 +471,7 @@ async fn expire_then_advance_makes_key_disappear() {
         .execute(Command::Get {
             key: "k".to_owned(),
         })
+        .await
         .expect("get");
     assert_eq!(r, Reply::Bulk(None));
 }
@@ -447,12 +487,14 @@ async fn expire_repeated_last_wins() {
             value: b"v".to_vec(),
             ttl_secs: None,
         })
+        .await
         .expect("set");
     store
         .execute(Command::Expire {
             key: "k".to_owned(),
             seconds: 1,
         })
+        .await
         .expect("expire 1");
     // Re-EXPIRE longer.
     store
@@ -460,6 +502,7 @@ async fn expire_repeated_last_wins() {
             key: "k".to_owned(),
             seconds: 10,
         })
+        .await
         .expect("expire 10");
     // Advance past the original 1s TTL — stale DelayQueue entry would
     // fire here.  Key must SURVIVE (expires_at now points to the new
@@ -470,6 +513,7 @@ async fn expire_repeated_last_wins() {
         .execute(Command::Get {
             key: "k".to_owned(),
         })
+        .await
         .expect("get");
     assert_eq!(
         r,
@@ -490,11 +534,13 @@ async fn persist_then_stale_fire_does_not_delete_key() {
             value: b"v".to_vec(),
             ttl_secs: Some(1),
         })
+        .await
         .expect("set ttl");
     store
         .execute(Command::Persist {
             key: "k".to_owned(),
         })
+        .await
         .expect("persist");
     tokio::time::advance(Duration::from_millis(1500)).await;
     tokio::task::yield_now().await;
@@ -502,6 +548,7 @@ async fn persist_then_stale_fire_does_not_delete_key() {
         .execute(Command::Get {
             key: "k".to_owned(),
         })
+        .await
         .expect("get");
     assert_eq!(
         r,
@@ -521,18 +568,21 @@ async fn expire_zero_or_negative_deletes_key() {
             value: b"v".to_vec(),
             ttl_secs: None,
         })
+        .await
         .expect("set");
     let r = store
         .execute(Command::Expire {
             key: "k".to_owned(),
             seconds: 0,
         })
+        .await
         .expect("expire 0");
     assert_eq!(r, Reply::Integer(1));
     let g = store
         .execute(Command::Get {
             key: "k".to_owned(),
         })
+        .await
         .expect("get");
     assert_eq!(g, Reply::Bulk(None));
 }
@@ -548,11 +598,13 @@ async fn type_existing_string_returns_string() {
             value: b"v".to_vec(),
             ttl_secs: None,
         })
+        .await
         .expect("set");
     let r = store
         .execute(Command::Type {
             key: "k".to_owned(),
         })
+        .await
         .expect("type");
     assert_eq!(r, Reply::SimpleString("string".to_owned()));
 }
@@ -564,6 +616,7 @@ async fn type_missing_returns_none() {
         .execute(Command::Type {
             key: "nope".to_owned(),
         })
+        .await
         .expect("type");
     assert_eq!(r, Reply::SimpleString("none".to_owned()));
 }
@@ -577,6 +630,7 @@ async fn type_expired_key_returns_none() {
             value: b"v".to_vec(),
             ttl_secs: Some(1),
         })
+        .await
         .expect("set");
     tokio::time::advance(Duration::from_millis(1100)).await;
     // Do NOT yield — we want to check the "logically expired but not yet
@@ -585,6 +639,7 @@ async fn type_expired_key_returns_none() {
         .execute(Command::Type {
             key: "k".to_owned(),
         })
+        .await
         .expect("type");
     assert_eq!(r, Reply::SimpleString("none".to_owned()));
 }
@@ -601,12 +656,14 @@ async fn keys_star_returns_all_live_keys() {
                 value: b"v".to_vec(),
                 ttl_secs: None,
             })
+            .await
             .expect("set");
     }
     let r = store
         .execute(Command::Keys {
             pattern: "*".to_owned(),
         })
+        .await
         .expect("keys");
     let Reply::Array(Some(mut keys)) = r else {
         panic!("expected Array(Some(_)), got {r:?}");
@@ -625,12 +682,14 @@ async fn keys_prefix_pattern() {
                 value: b"v".to_vec(),
                 ttl_secs: None,
             })
+            .await
             .expect("set");
     }
     let r = store
         .execute(Command::Keys {
             pattern: "user:*".to_owned(),
         })
+        .await
         .expect("keys");
     let Reply::Array(Some(mut keys)) = r else {
         panic!("expected Array(Some(_)), got {r:?}");
@@ -649,12 +708,14 @@ async fn keys_question_pattern_single_char() {
                 value: b"v".to_vec(),
                 ttl_secs: None,
             })
+            .await
             .expect("set");
     }
     let r = store
         .execute(Command::Keys {
             pattern: "user:?".to_owned(),
         })
+        .await
         .expect("keys");
     let Reply::Array(Some(mut keys)) = r else {
         panic!("expected Array(Some(_)), got {r:?}");
@@ -673,12 +734,14 @@ async fn keys_class_pattern() {
                 value: b"v".to_vec(),
                 ttl_secs: None,
             })
+            .await
             .expect("set");
     }
     let r = store
         .execute(Command::Keys {
             pattern: "[abc]*".to_owned(),
         })
+        .await
         .expect("keys");
     let Reply::Array(Some(mut keys)) = r else {
         panic!("expected Array(Some(_)), got {r:?}");
@@ -699,6 +762,7 @@ async fn keys_escaped_star_is_literal() {
             value: b"v".to_vec(),
             ttl_secs: None,
         })
+        .await
         .expect("set literal *");
     store
         .execute(Command::Set {
@@ -706,11 +770,13 @@ async fn keys_escaped_star_is_literal() {
             value: b"v".to_vec(),
             ttl_secs: None,
         })
+        .await
         .expect("set x");
     let r = store
         .execute(Command::Keys {
             pattern: "\\*".to_owned(),
         })
+        .await
         .expect("keys");
     assert_eq!(r, Reply::Array(Some(vec![b"*".to_vec()])));
 }
@@ -722,6 +788,7 @@ async fn keys_empty_db_returns_empty_array() {
         .execute(Command::Keys {
             pattern: "*".to_owned(),
         })
+        .await
         .expect("keys");
     assert_eq!(r, Reply::Array(Some(vec![])));
 }
@@ -735,6 +802,7 @@ async fn keys_skips_expired() {
             value: b"v".to_vec(),
             ttl_secs: None,
         })
+        .await
         .expect("set live");
     store
         .execute(Command::Set {
@@ -742,6 +810,7 @@ async fn keys_skips_expired() {
             value: b"v".to_vec(),
             ttl_secs: Some(1),
         })
+        .await
         .expect("set dead");
     tokio::time::advance(Duration::from_millis(1100)).await;
     // Do NOT yield to background — we want the "logically expired but
@@ -750,6 +819,7 @@ async fn keys_skips_expired() {
         .execute(Command::Keys {
             pattern: "*".to_owned(),
         })
+        .await
         .expect("keys");
     assert_eq!(r, Reply::Array(Some(vec![b"live".to_vec()])));
 }
@@ -767,6 +837,7 @@ async fn set_no_ttl_clears_expiry() {
             value: b"old".to_vec(),
             ttl_secs: Some(1),
         })
+        .await
         .expect("set with ttl");
 
     // Overwrite without TTL before expiry fires.
@@ -776,6 +847,7 @@ async fn set_no_ttl_clears_expiry() {
             value: b"new".to_vec(),
             ttl_secs: None,
         })
+        .await
         .expect("set without ttl");
 
     // Advance well past the original TTL.
@@ -787,6 +859,7 @@ async fn set_no_ttl_clears_expiry() {
         .execute(Command::Get {
             key: "k".to_owned(),
         })
+        .await
         .expect("get");
     // The background task may remove the key (old delay fires) but the entry's
     // expires_at is None after the second SET, so the guard in the task will not

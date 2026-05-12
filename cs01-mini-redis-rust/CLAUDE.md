@@ -10,11 +10,13 @@
 
 - ❌ **不准用 `std::collections::HashMap` 假装 Redis hash 命令**(`HSET`/`HGET` 等)。
 - ❌ **不准用 `BTreeMap` 模拟 sorted set**(`ZADD`/`ZRANGE`)。
-- ❌ **不准用 `tokio::sync::broadcast` 替代真 Pub/Sub subscription tracking**(那是简化,本质需要 per-subscriber state)。
+- ⚠️ `tokio::sync::broadcast` 接受作 Pub/Sub fan-out (ADR-0009 已论证); 但: lagging client 必须显式 disconnect 而不是 silently drop msg; subscriber state 必须真在 per-conn 持 (`ConnState::Subscribed { rxs }`),不准 stash to global。判断标准维持:`redis-cli` round-trip 跟真 Redis 行为可区分 → 是简化 → F24。
 - ✅ 允许用 `hashbrown::HashMap` 作 string KV(不是为了"模拟",是因为对应 Redis 内部就是 hashtable)。
 - ✅ 允许用 `tokio::time::DelayQueue` 实现 TTL(对应 Redis 的 active expiration)。
 
 判断标准:**如果用户用 `redis-cli` 跟我们对接,他能不能从行为上区分我们的实现和真 Redis**?能 → 是模拟 → F24。不能 → 是合规简化。
+
+> M4.1 (ADR-0011 §#5) charter-doc update:M3.1 charter 原文 "❌ 不准用 `tokio::sync::broadcast` 替代真 Pub/Sub subscription tracking" 在 ADR-0009 后变成 constitution-vs-decision drift (F1 sub-pattern)。pre-M4 audit 实际确认 broadcast + `Arc<Vec<u8>>` 共享 + 自然 fan-out 的 trade-off 合理,旧约束 over-prohibit。本节按 ADSD F1 "charter doc 跟随 reality update" 原则修正。
 
 ## 2. 本 case 的 oracle(F23-A 防御)
 
@@ -66,7 +68,9 @@ done
 - `redis-server` crate:Axum + tokio + RESP TCP listener。依赖前两者。
 - `web/` 是 SvelteKit project,通过 rust-embed 嵌入 redis-server binary。
 
-依赖单向,不允许反向 import。
+依赖单向:`server → storage` / `server → protocol` / **`storage → protocol`(仅为 AOF wire compatibility,ADR-0010 论证)**。**`protocol → storage` 反向禁止**;**`server → server` 不允许**(避免循环)。
+
+> M4.1 (ADR-0011 §#6) charter-doc update:原文 "依赖单向, 不允许反向 import" 在 M3.2 (ADR-0010) 后变成 constitution-vs-decision drift — `redis-storage` 拉 `redis-protocol` 复用 `Frame::to_bytes` 给 AOF 编码,这是 F24 defence (不重新发明 RESP wire),合理。本节明确接受这条单向边,反向 (`protocol → storage`) 仍然禁止。
 
 ## 5. 性能 SLO(不是必须达成,但要测出来)
 

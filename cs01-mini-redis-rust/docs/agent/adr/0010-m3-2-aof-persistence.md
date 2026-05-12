@@ -254,3 +254,25 @@ async move {
 - 7 AOF restart-roundtrip fixtures (M3.2,8 observations vs real `redis:7-alpine --appendonly yes`)
 
 `oracle_aof.py` 用独立 docker container + 独立 port(避免和 baseline 容器抢 `/data`),kill-and-restart 双方,然后 diff GET / EXISTS / TTL / TYPE 8 项 — 全 match。
+
+## Addendum (M4.1, ADR-0011, 2026-05-12)
+
+M4.1 在 M3.2 设计基础上做了 4 项加固,均为**追加 / 收紧**而非冲突,因此不开 `supersedes`:
+
+1. **`FsyncPolicy::AlwaysBlocking` 新 variant**(ADR-0011 §#7):原 M3.2 `Always` 在写入路径返回 `Reply::Ok` **早于** writer task 完成 `sync_data` — 文档 / 单元测试无法区分,但生产语义是 "1 scheduler quantum 内 fsync 一定发生,但不在请求路径内"。M4.1 加 `AlwaysBlocking` 真正 block 直到 `sync_data` 返回再回 reply,语义对齐 "reply received ⇒ command on disk"。`Always` 保留并明确为 "异步 fsync"。两 variant 都在 CLI 接受 (`--aof-fsync always` / `--aof-fsync alwaysblocking`)。
+2. **AOF mpsc bounded**(ADR-0011 §#8):M3.2 用 `unbounded_channel` 在慢盘 + 写突发场景下会 OOM。M4.1 改 `mpsc::channel(8192)`(`AOF_QUEUE_CAPACITY`);`AofWriter::append` 走 `try_send` fast path,满则 fall back 到 `send().await` — 把背压传给 RESP path,匹配真 Redis 慢盘行为。
+3. **AOF 文件 mode 0o600**(ADR-0011 §#4,Unix only):M3.2 用 OS umask(典型 0o644 world-readable),会泄漏 value 中的 session token / password。M4.1 在 `open_aof` 帮手里 `cfg(unix)` 显式 `mode(0o600)`,非 Unix 走 OS 默认。
+4. **`Store::execute` / `Store::execute_no_aof` / `Store::replay_from_path` 全部变 `pub async fn`**(ADR-0011 §#7 + §#9 + wave-internal API break):M3.2 的 sync 签名无法在写入路径里 `.await` (1) 慢盘的 `send().await` 背压;(2) AlwaysBlocking 的 oneshot。所有内部 + 测试 caller 已经在 async context (`#[tokio::test]` / `handle_conn`),改 await chain 而已,不影响 wire / oracle 行为。`replay_from_path` 同时改用 `tokio::fs::File + BufReader` 流式读取,内存峰值不再随 AOF 文件大小线性增长。
+
+落地证据 (commit 见 git log 本 wave):
+- `crates/redis-storage/src/aof.rs:104-112` `FsyncPolicy::AlwaysBlocking` variant + parser 接受 4 个值
+- `crates/redis-storage/src/aof.rs:64` `AOF_QUEUE_CAPACITY = 8192`
+- `crates/redis-storage/src/aof.rs:378-388` `open_aof` 跨 unix/non-unix 实现
+- `crates/redis-storage/src/lib.rs:419-516` 流式 `replay_from_path`
+- `crates/redis-storage/src/lib.rs:559-595` `Store::execute` async + AlwaysBlocking 分支
+- 4 个 M4.1 测试 in `crates/redis-storage/tests/aof.rs`: `aof_file_is_mode_600_on_unix` / `always_blocking_writes_visible_on_disk_before_return` / `always_blocking_round_trip_via_replay` / `streaming_replay_handles_thousand_small_frames`
+
+接受的债:
+- 8 GiB+ AOF 真实物理 replay 内存测量仍未做(磁盘 / 时间限制),只通过 1024-frame 测试 + code review 守 streaming 行为
+- AOF rewrite (compact same-key writes) 仍 M5+
+- bounded mpsc 的"满则永远 block"行为对极端慢盘场景的 latency cliff 未量化 — M5+ benchmark task

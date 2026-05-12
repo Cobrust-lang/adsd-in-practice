@@ -150,6 +150,11 @@ FIXTURES=(
     "TTL key1"
     "DEL key1 ttlkey nonexistent"
     "SELECT 0"
+    # M4.1 (ADR-0011 §#10): SET with trailing token must error.
+    # Real Redis 7-alpine returns `(error) ERR syntax error`; we must
+    # match.  This is the F23-A oracle gap SA-6 caught by the pre-M4
+    # deep-source-read audit (M3.2 silently accepted these).
+    "SET trailingkey v EX 60 GARBAGE"
 )
 
 failures=0

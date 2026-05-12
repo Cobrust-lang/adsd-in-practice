@@ -63,6 +63,7 @@ async fn set_appends_resp_array_to_aof_file() {
             value: b"v".to_vec(),
             ttl_secs: None,
         })
+        .await
         .expect("set");
     assert_eq!(reply, Reply::Ok);
 
@@ -88,6 +89,7 @@ async fn set_with_ex_appends_five_part_array() {
             value: b"v".to_vec(),
             ttl_secs: Some(60),
         })
+        .await
         .expect("set ex");
     store.aof_flush().await;
     drop(store);
@@ -109,19 +111,23 @@ async fn read_only_commands_do_not_extend_aof() {
         .execute(Command::Get {
             key: "missing".to_owned(),
         })
+        .await
         .expect("get");
     let _ = store
         .execute(Command::Exists {
             keys: vec!["x".to_owned()],
         })
+        .await
         .expect("exists");
     let _ = store
         .execute(Command::Ping { message: None })
+        .await
         .expect("ping");
     let _ = store
         .execute(Command::Echo {
             message: b"hi".to_vec(),
         })
+        .await
         .expect("echo");
     store.aof_flush().await;
     drop(store);
@@ -146,6 +152,7 @@ async fn pubsub_commands_do_not_extend_aof() {
             channel: "c".to_owned(),
             message: b"m".to_vec(),
         })
+        .await
         .expect("publish");
     // SUBSCRIBE / UNSUBSCRIBE reach execute via dispatch-bug path
     // but the AOF encoder still returns None for them; exercise.
@@ -153,11 +160,13 @@ async fn pubsub_commands_do_not_extend_aof() {
         .execute(Command::Subscribe {
             channels: vec!["c".to_owned()],
         })
+        .await
         .expect("subscribe-routes-to-error-but-still-tests-encode");
     let _ = store
         .execute(Command::Unsubscribe {
             channels: vec!["c".to_owned()],
         })
+        .await
         .expect("unsubscribe-routes-to-error");
     store.aof_flush().await;
     drop(store);
@@ -176,27 +185,39 @@ async fn incr_decr_del_expire_persist_all_appended() {
     let store = Store::with_aof(temp.path.clone(), FsyncPolicy::Always)
         .await
         .expect("with_aof");
-    let _ = store.execute(Command::Incr {
-        key: "c".to_owned(),
-    });
-    let _ = store.execute(Command::Decr {
-        key: "c".to_owned(),
-    });
-    let _ = store.execute(Command::Set {
-        key: "k".to_owned(),
-        value: b"v".to_vec(),
-        ttl_secs: None,
-    });
-    let _ = store.execute(Command::Expire {
-        key: "k".to_owned(),
-        seconds: 30,
-    });
-    let _ = store.execute(Command::Persist {
-        key: "k".to_owned(),
-    });
-    let _ = store.execute(Command::Del {
-        keys: vec!["k".to_owned(), "missing".to_owned()],
-    });
+    let _ = store
+        .execute(Command::Incr {
+            key: "c".to_owned(),
+        })
+        .await;
+    let _ = store
+        .execute(Command::Decr {
+            key: "c".to_owned(),
+        })
+        .await;
+    let _ = store
+        .execute(Command::Set {
+            key: "k".to_owned(),
+            value: b"v".to_vec(),
+            ttl_secs: None,
+        })
+        .await;
+    let _ = store
+        .execute(Command::Expire {
+            key: "k".to_owned(),
+            seconds: 30,
+        })
+        .await;
+    let _ = store
+        .execute(Command::Persist {
+            key: "k".to_owned(),
+        })
+        .await;
+    let _ = store
+        .execute(Command::Del {
+            keys: vec!["k".to_owned(), "missing".to_owned()],
+        })
+        .await;
     store.aof_flush().await;
     drop(store);
 
@@ -222,15 +243,18 @@ async fn incr_error_does_not_append_to_aof() {
     let store = Store::with_aof(temp.path.clone(), FsyncPolicy::Always)
         .await
         .expect("with_aof");
-    let _ = store.execute(Command::Set {
-        key: "k".to_owned(),
-        value: b"not-a-number".to_vec(),
-        ttl_secs: None,
-    });
+    let _ = store
+        .execute(Command::Set {
+            key: "k".to_owned(),
+            value: b"not-a-number".to_vec(),
+            ttl_secs: None,
+        })
+        .await;
     let reply = store
         .execute(Command::Incr {
             key: "k".to_owned(),
         })
+        .await
         .expect("incr");
     assert!(matches!(reply, Reply::Error(_)), "expected Reply::Error");
     store.aof_flush().await;
@@ -251,7 +275,7 @@ async fn replay_nonexistent_path_returns_zero() {
     let temp = TempAof::new("missing-path");
     // Don't touch the file.
     let store = Store::new();
-    let count = store.replay_from_path(&temp.path).expect("replay");
+    let count = store.replay_from_path(&temp.path).await.expect("replay");
     assert_eq!(count, 0);
 }
 
@@ -260,7 +284,7 @@ async fn replay_empty_file_returns_zero() {
     let temp = TempAof::new("empty");
     std::fs::write(&temp.path, b"").expect("create empty");
     let store = Store::new();
-    let count = store.replay_from_path(&temp.path).expect("replay");
+    let count = store.replay_from_path(&temp.path).await.expect("replay");
     assert_eq!(count, 0);
 }
 
@@ -273,52 +297,65 @@ async fn replay_round_trip_rebuilds_state() {
         let store = Store::with_aof(temp.path.clone(), FsyncPolicy::Always)
             .await
             .expect("with_aof");
-        let _ = store.execute(Command::Set {
-            key: "foo".to_owned(),
-            value: b"bar".to_vec(),
-            ttl_secs: None,
-        });
-        let _ = store.execute(Command::Set {
-            key: "n".to_owned(),
-            value: b"10".to_vec(),
-            ttl_secs: None,
-        });
-        let _ = store.execute(Command::Incr {
-            key: "n".to_owned(),
-        });
-        let _ = store.execute(Command::Set {
-            key: "doomed".to_owned(),
-            value: b"x".to_vec(),
-            ttl_secs: None,
-        });
-        let _ = store.execute(Command::Del {
-            keys: vec!["doomed".to_owned()],
-        });
+        let _ = store
+            .execute(Command::Set {
+                key: "foo".to_owned(),
+                value: b"bar".to_vec(),
+                ttl_secs: None,
+            })
+            .await;
+        let _ = store
+            .execute(Command::Set {
+                key: "n".to_owned(),
+                value: b"10".to_vec(),
+                ttl_secs: None,
+            })
+            .await;
+        let _ = store
+            .execute(Command::Incr {
+                key: "n".to_owned(),
+            })
+            .await;
+        let _ = store
+            .execute(Command::Set {
+                key: "doomed".to_owned(),
+                value: b"x".to_vec(),
+                ttl_secs: None,
+            })
+            .await;
+        let _ = store
+            .execute(Command::Del {
+                keys: vec!["doomed".to_owned()],
+            })
+            .await;
         store.aof_flush().await;
         drop(store);
     }
 
     // Replay into a fresh in-memory store and assert state matches.
     let store2 = Store::new();
-    let count = store2.replay_from_path(&temp.path).expect("replay");
+    let count = store2.replay_from_path(&temp.path).await.expect("replay");
     assert_eq!(count, 5, "5 writable commands recorded");
 
     let foo = store2
         .execute(Command::Get {
             key: "foo".to_owned(),
         })
+        .await
         .expect("get foo");
     assert_eq!(foo, Reply::Bulk(Some(b"bar".to_vec())));
     let n = store2
         .execute(Command::Get {
             key: "n".to_owned(),
         })
+        .await
         .expect("get n");
     assert_eq!(n, Reply::Bulk(Some(b"11".to_vec())));
     let doomed = store2
         .execute(Command::Get {
             key: "doomed".to_owned(),
         })
+        .await
         .expect("get doomed");
     assert_eq!(doomed, Reply::Bulk(None));
 }
@@ -333,18 +370,20 @@ async fn replay_does_not_re_extend_file() {
         let store = Store::with_aof(temp.path.clone(), FsyncPolicy::Always)
             .await
             .expect("with_aof");
-        let _ = store.execute(Command::Set {
-            key: "k".to_owned(),
-            value: b"v".to_vec(),
-            ttl_secs: None,
-        });
+        let _ = store
+            .execute(Command::Set {
+                key: "k".to_owned(),
+                value: b"v".to_vec(),
+                ttl_secs: None,
+            })
+            .await;
         store.aof_flush().await;
         drop(store);
     }
     let len_before = std::fs::metadata(&temp.path).expect("meta").len();
 
     let store2 = Store::new();
-    let count = store2.replay_from_path(&temp.path).expect("replay");
+    let count = store2.replay_from_path(&temp.path).await.expect("replay");
     assert_eq!(count, 1);
 
     let len_after = std::fs::metadata(&temp.path).expect("meta").len();
@@ -364,7 +403,7 @@ async fn replay_truncated_tail_logs_and_returns_valid_count() {
     std::fs::write(&temp.path, &bytes).expect("write");
 
     let store = Store::new();
-    let count = store.replay_from_path(&temp.path).expect("replay");
+    let count = store.replay_from_path(&temp.path).await.expect("replay");
     assert_eq!(count, 1, "valid prefix replayed");
 
     // State should reflect the one valid command.
@@ -372,6 +411,7 @@ async fn replay_truncated_tail_logs_and_returns_valid_count() {
         .execute(Command::Get {
             key: "k".to_owned(),
         })
+        .await
         .expect("get");
     assert_eq!(r, Reply::Bulk(Some(b"v".to_vec())));
 }
@@ -386,13 +426,14 @@ async fn replay_invalid_byte_mid_stream_warns_and_stops() {
     std::fs::write(&temp.path, &bytes).expect("write");
 
     let store = Store::new();
-    let count = store.replay_from_path(&temp.path).expect("replay");
+    let count = store.replay_from_path(&temp.path).await.expect("replay");
     assert_eq!(count, 1, "one valid command before garbage");
 
     let r = store
         .execute(Command::Get {
             key: "k".to_owned(),
         })
+        .await
         .expect("get");
     assert_eq!(r, Reply::Bulk(Some(b"v".to_vec())));
 }
@@ -412,18 +453,20 @@ async fn replay_skips_non_writable_frames_without_failing() {
     std::fs::write(&temp.path, &bytes).expect("write");
 
     let store = Store::new();
-    let count = store.replay_from_path(&temp.path).expect("replay");
+    let count = store.replay_from_path(&temp.path).await.expect("replay");
     assert_eq!(count, 2, "only SETs count");
     let a = store
         .execute(Command::Get {
             key: "a".to_owned(),
         })
+        .await
         .expect("get a");
     assert_eq!(a, Reply::Bulk(Some(b"1".to_vec())));
     let b = store
         .execute(Command::Get {
             key: "b".to_owned(),
         })
+        .await
         .expect("get b");
     assert_eq!(b, Reply::Bulk(Some(b"2".to_vec())));
 }
@@ -440,11 +483,13 @@ async fn ttl_short_lived_key_expires_after_replay() {
         let store = Store::with_aof(temp.path.clone(), FsyncPolicy::Always)
             .await
             .expect("with_aof");
-        let _ = store.execute(Command::Set {
-            key: "k".to_owned(),
-            value: b"v".to_vec(),
-            ttl_secs: Some(1),
-        });
+        let _ = store
+            .execute(Command::Set {
+                key: "k".to_owned(),
+                value: b"v".to_vec(),
+                ttl_secs: Some(1),
+            })
+            .await;
         store.aof_flush().await;
         drop(store);
     }
@@ -453,7 +498,7 @@ async fn ttl_short_lived_key_expires_after_replay() {
     tokio::time::sleep(Duration::from_millis(1200)).await;
 
     let store2 = Store::new();
-    let count = store2.replay_from_path(&temp.path).expect("replay");
+    let count = store2.replay_from_path(&temp.path).await.expect("replay");
     assert_eq!(count, 1);
 
     // Allow the DelayQueue to fire (TTL relative, replay treats it
@@ -464,6 +509,7 @@ async fn ttl_short_lived_key_expires_after_replay() {
         .execute(Command::Get {
             key: "k".to_owned(),
         })
+        .await
         .expect("get");
     assert_eq!(
         r,
@@ -480,23 +526,26 @@ async fn long_ttl_survives_restart_with_drift_under_one_sec() {
         let store = Store::with_aof(temp.path.clone(), FsyncPolicy::Always)
             .await
             .expect("with_aof");
-        let _ = store.execute(Command::Set {
-            key: "k".to_owned(),
-            value: b"v".to_vec(),
-            ttl_secs: Some(100),
-        });
+        let _ = store
+            .execute(Command::Set {
+                key: "k".to_owned(),
+                value: b"v".to_vec(),
+                ttl_secs: Some(100),
+            })
+            .await;
         store.aof_flush().await;
         drop(store);
     }
 
     let store2 = Store::new();
-    let _ = store2.replay_from_path(&temp.path).expect("replay");
+    let _ = store2.replay_from_path(&temp.path).await.expect("replay");
 
     // Value present
     let v = store2
         .execute(Command::Get {
             key: "k".to_owned(),
         })
+        .await
         .expect("get");
     assert_eq!(v, Reply::Bulk(Some(b"v".to_vec())));
 
@@ -505,6 +554,7 @@ async fn long_ttl_survives_restart_with_drift_under_one_sec() {
         .execute(Command::Ttl {
             key: "k".to_owned(),
         })
+        .await
         .expect("ttl");
     let Reply::Integer(n) = ttl_reply else {
         panic!("expected Reply::Integer, got {ttl_reply:?}");
@@ -526,25 +576,31 @@ async fn restart_round_trip_set_set_ex_del() {
         let store = Store::with_aof(temp.path.clone(), FsyncPolicy::Always)
             .await
             .expect("with_aof");
-        let _ = store.execute(Command::Set {
-            key: "k1".to_owned(),
-            value: b"v1".to_vec(),
-            ttl_secs: None,
-        });
-        let _ = store.execute(Command::Set {
-            key: "k2".to_owned(),
-            value: b"v2".to_vec(),
-            ttl_secs: Some(100),
-        });
-        let _ = store.execute(Command::Del {
-            keys: vec!["k1".to_owned()],
-        });
+        let _ = store
+            .execute(Command::Set {
+                key: "k1".to_owned(),
+                value: b"v1".to_vec(),
+                ttl_secs: None,
+            })
+            .await;
+        let _ = store
+            .execute(Command::Set {
+                key: "k2".to_owned(),
+                value: b"v2".to_vec(),
+                ttl_secs: Some(100),
+            })
+            .await;
+        let _ = store
+            .execute(Command::Del {
+                keys: vec!["k1".to_owned()],
+            })
+            .await;
         store.aof_flush().await;
         drop(store);
     }
 
     let store2 = Store::new();
-    let count = store2.replay_from_path(&temp.path).expect("replay");
+    let count = store2.replay_from_path(&temp.path).await.expect("replay");
     assert_eq!(count, 3);
 
     assert_eq!(
@@ -552,6 +608,7 @@ async fn restart_round_trip_set_set_ex_del() {
             .execute(Command::Get {
                 key: "k1".to_owned()
             })
+            .await
             .expect("get k1"),
         Reply::Bulk(None),
         "k1 must be gone after DEL"
@@ -561,6 +618,7 @@ async fn restart_round_trip_set_set_ex_del() {
             .execute(Command::Get {
                 key: "k2".to_owned()
             })
+            .await
             .expect("get k2"),
         Reply::Bulk(Some(b"v2".to_vec())),
         "k2 must survive"
@@ -569,9 +627,148 @@ async fn restart_round_trip_set_set_ex_del() {
         .execute(Command::Ttl {
             key: "k2".to_owned(),
         })
+        .await
         .expect("ttl k2");
     let Reply::Integer(n) = ttl else {
         panic!("ttl reply: {ttl:?}");
     };
     assert!((99..=100).contains(&n), "k2 ttl ~100, got {n}");
+}
+
+// ── M4.1 (ADR-0011 §#4) — AOF file mode 0o600 (Unix only) ───────────────────
+
+#[cfg(unix)]
+#[tokio::test]
+async fn aof_file_is_mode_600_on_unix() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let temp = TempAof::new("mode-0600");
+    let _store = Store::with_aof(temp.path.clone(), FsyncPolicy::Everysec)
+        .await
+        .expect("with_aof open");
+
+    let perms = std::fs::metadata(&temp.path)
+        .expect("metadata")
+        .permissions();
+    let mode = perms.mode() & 0o777;
+    assert_eq!(
+        mode, 0o600,
+        "AOF file must be mode 0o600 on Unix, got {mode:o}"
+    );
+}
+
+// ── M4.1 (ADR-0011 §#7) — `AlwaysBlocking` is durable-before-return ─────────
+
+#[tokio::test]
+async fn always_blocking_writes_visible_on_disk_before_return() {
+    // After `execute(...).await` returns under `AlwaysBlocking`, the
+    // bytes MUST already be `sync_data`-ed.  We assert this by
+    // reading the file IMMEDIATELY after execute returns — without
+    // any explicit `aof_flush().await`.  Under `Always` (async)
+    // there would be a race; under `AlwaysBlocking` there cannot.
+    let temp = TempAof::new("alwaysblocking-durable");
+    let store = Store::with_aof(temp.path.clone(), FsyncPolicy::AlwaysBlocking)
+        .await
+        .expect("with_aof alwaysblocking");
+
+    let reply = store
+        .execute(Command::Set {
+            key: "k".to_owned(),
+            value: b"v".to_vec(),
+            ttl_secs: None,
+        })
+        .await
+        .expect("set");
+    assert_eq!(reply, Reply::Ok);
+
+    // No flush — read the file straight away.  Bytes must be present.
+    let bytes = std::fs::read(&temp.path).expect("read aof");
+    assert_eq!(
+        bytes, b"*3\r\n$3\r\nSET\r\n$1\r\nk\r\n$1\r\nv\r\n",
+        "AlwaysBlocking must persist the SET before execute returns"
+    );
+}
+
+#[tokio::test]
+async fn always_blocking_round_trip_via_replay() {
+    // Stronger end-to-end check: write N commands under
+    // AlwaysBlocking, drop the store (which closes the file), and
+    // verify every command is in the replayed state.  This is the
+    // "kill -9 + restart" simulation from ADR-0011 §Done Criteria.
+    let temp = TempAof::new("alwaysblocking-replay");
+
+    {
+        let store = Store::with_aof(temp.path.clone(), FsyncPolicy::AlwaysBlocking)
+            .await
+            .expect("with_aof");
+        for i in 0..5 {
+            let key = format!("k{i}");
+            let value = format!("v{i}");
+            let _ = store
+                .execute(Command::Set {
+                    key,
+                    value: value.into_bytes(),
+                    ttl_secs: None,
+                })
+                .await
+                .expect("set");
+        }
+        // Intentionally NO aof_flush — AlwaysBlocking gives us the
+        // durability guarantee already.
+        drop(store);
+    }
+
+    let store2 = Store::new();
+    let count = store2.replay_from_path(&temp.path).await.expect("replay");
+    assert_eq!(count, 5, "all 5 AlwaysBlocking commands must replay");
+
+    for i in 0..5 {
+        let key = format!("k{i}");
+        let want = format!("v{i}");
+        let r = store2
+            .execute(Command::Get { key: key.clone() })
+            .await
+            .expect("get");
+        assert_eq!(r, Reply::Bulk(Some(want.into_bytes())));
+    }
+}
+
+// ── M4.1 (ADR-0011 §#9) — streaming replay handles many small frames ──────
+
+#[tokio::test]
+async fn streaming_replay_handles_thousand_small_frames() {
+    // Write 1024 SET commands into a single AOF and replay them all.
+    // This exercises the streaming reader's chunk-refill loop with
+    // mixed frame boundaries inside `READ_CHUNK` (64 KiB).
+    let temp = TempAof::new("streaming-1024");
+
+    {
+        let store = Store::with_aof(temp.path.clone(), FsyncPolicy::Always)
+            .await
+            .expect("with_aof");
+        for i in 0..1024 {
+            let _ = store
+                .execute(Command::Set {
+                    key: format!("k{i}"),
+                    value: format!("v{i}").into_bytes(),
+                    ttl_secs: None,
+                })
+                .await
+                .expect("set");
+        }
+        store.aof_flush().await;
+        drop(store);
+    }
+
+    let store2 = Store::new();
+    let count = store2.replay_from_path(&temp.path).await.expect("replay");
+    assert_eq!(count, 1024);
+    // Spot check.
+    let r = store2
+        .execute(Command::Get {
+            key: "k512".to_owned(),
+        })
+        .await
+        .expect("get");
+    assert_eq!(r, Reply::Bulk(Some(b"v512".to_vec())));
 }

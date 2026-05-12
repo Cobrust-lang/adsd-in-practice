@@ -83,6 +83,16 @@ fn parse_integer_bytes(buf: &[u8], start: usize) -> Result<(i64, usize), Protoco
     Ok((signed, crlf))
 }
 
+/// Maximum allowed recursion depth when parsing nested `Array` frames.
+///
+/// ADR-0011 §#3 / audit Security HIGH-4: an unbounded `*1\r\n*1\r\n...`
+/// stream would recurse `Frame::parse` once per array level and could
+/// blow the thread stack.  32 is well above any legitimate Redis
+/// client (MULTI/EXEC + nested transactions cap out at single-digit
+/// depth in practice) and well below the platform stack budget per
+/// `tokio::spawn` worker (~2 MiB).
+pub const MAX_FRAME_DEPTH: usize = 32;
+
 impl Frame {
     /// Parse one frame from a byte buffer.
     ///
@@ -97,12 +107,25 @@ impl Frame {
     /// }
     /// ```
     ///
+    /// Internally delegates to a private depth-tracking parser; nested
+    /// `Array` frames beyond [`MAX_FRAME_DEPTH`] are rejected with
+    /// `ProtocolError::Invalid("frame nested too deeply")`.
+    ///
     /// # Errors
     ///
     /// Returns `ProtocolError::Incomplete` when more bytes are needed.
     /// Returns `ProtocolError::Invalid` on malformed protocol bytes.
     /// Returns `ProtocolError::Utf8` when a simple-string / error line is not UTF-8.
     pub fn parse(input: &[u8]) -> Result<(Self, usize), ProtocolError> {
+        Self::parse_with_depth(input, 0)
+    }
+
+    /// Depth-tracked recursive parse helper.
+    ///
+    /// Each `Array` element advances `depth` by 1; reaching
+    /// [`MAX_FRAME_DEPTH`] returns the `frame nested too deeply` error
+    /// before recursing further.  Non-array arms ignore `depth`.
+    fn parse_with_depth(input: &[u8], depth: usize) -> Result<(Self, usize), ProtocolError> {
         if input.is_empty() {
             return Err(ProtocolError::Incomplete);
         }
@@ -166,11 +189,16 @@ impl Frame {
                 }
                 let n = usize::try_from(count)
                     .map_err(|_| ProtocolError::Invalid("array count too large for usize"))?;
+                // Depth guard fires BEFORE allocating the child Vec so an
+                // attacker can't induce O(MAX_DEPTH) per-frame allocs.
+                if n > 0 && depth >= MAX_FRAME_DEPTH {
+                    return Err(ProtocolError::Invalid("frame nested too deeply"));
+                }
                 let mut elements = Vec::with_capacity(n);
                 let mut cursor = crlf + 2;
                 for _ in 0..n {
                     let remaining = &input[cursor..];
-                    let (elem, elem_consumed) = Frame::parse(remaining)?;
+                    let (elem, elem_consumed) = Frame::parse_with_depth(remaining, depth + 1)?;
                     cursor += elem_consumed;
                     elements.push(elem);
                 }
@@ -205,7 +233,7 @@ impl Frame {
             }
             Frame::Integer(n) => {
                 out.push(b':');
-                // Format i64 without String alloc via itoa-style manual encoding.
+                // Format i64 — single allocation via String; itoa optimisation deferred to v0.2.
                 let s = n.to_string();
                 out.extend_from_slice(s.as_bytes());
                 out.extend_from_slice(b"\r\n");
@@ -282,5 +310,54 @@ mod tests {
     fn frame_incomplete_returns_error() {
         let result = Frame::parse(b"+OK\r");
         assert!(matches!(result, Err(ProtocolError::Incomplete)));
+    }
+
+    // ── M4.1 (ADR-0011 #3) recursion-depth guard ──────────────────────────────
+
+    /// Build a stream of `n` nested `*1\r\n` headers followed by a
+    /// terminal `+OK\r\n`.  Depth = n + 0 (the SimpleString leaf adds
+    /// no depth).
+    fn nested_array(n: usize) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(n * 4 + 5);
+        for _ in 0..n {
+            buf.extend_from_slice(b"*1\r\n");
+        }
+        buf.extend_from_slice(b"+OK\r\n");
+        buf
+    }
+
+    #[test]
+    fn frame_parse_accepts_max_depth() {
+        // MAX_FRAME_DEPTH = 32 — exactly 32 nested arrays must succeed.
+        let bytes = nested_array(MAX_FRAME_DEPTH);
+        let (frame, consumed) = Frame::parse(&bytes).expect("max-depth must parse");
+        assert_eq!(consumed, bytes.len());
+        // Unwrap 32 layers; the leaf should be SimpleString("OK").
+        let mut cur = &frame;
+        for _ in 0..MAX_FRAME_DEPTH {
+            match cur {
+                Frame::Array(Some(v)) => {
+                    assert_eq!(v.len(), 1);
+                    cur = &v[0];
+                }
+                other => panic!("unexpected non-Array at depth: {other:?}"),
+            }
+        }
+        assert_eq!(cur, &Frame::SimpleString("OK".to_owned()));
+    }
+
+    #[test]
+    fn frame_parse_rejects_over_depth() {
+        // MAX_FRAME_DEPTH + 1 (33) levels must be rejected with the
+        // exact `frame nested too deeply` message; the parser must
+        // NOT recurse further, NOT panic, NOT exhaust the stack.
+        let bytes = nested_array(MAX_FRAME_DEPTH + 1);
+        let err = Frame::parse(&bytes).expect_err("over-depth must error");
+        match err {
+            ProtocolError::Invalid(msg) => {
+                assert_eq!(msg, "frame nested too deeply", "wire message must match");
+            }
+            other => panic!("expected ProtocolError::Invalid, got {other:?}"),
+        }
     }
 }
