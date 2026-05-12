@@ -5,7 +5,7 @@ status: accepted
 date: 2026-05-12
 case: cs01-mini-redis-rust
 supersedes: none
-last_verified_commit: pending
+last_verified_commit: 35f4257
 ---
 
 # ADR-0010: M3.2 AOF persistence
@@ -233,3 +233,24 @@ async move {
 - replay 期间用 `Frame::parse` + max-frame-size guard 保护(file 损坏 / malicious file)
 - writer task 用 `BufWriter` 减少 syscalls(可选,M3.2 不强求)
 - `Store::with_aof` 是 alternative constructor;原 `Store::new()` 保持 backward-compatible(无 AOF)
+
+## Implementation deltas (post-impl, 2026-05-12)
+
+记录原 Decision 没明说但落地时定下来的 6 个细节,都在 Decision sub-decisions 的边界内:
+
+1. **`AofMsg` 双 variant 消息**(`Append(Vec<u8>)` / `Flush(oneshot::Sender<()>)`):原 ADR 写 mpsc 的 message 是 `Vec<u8>`,但 graceful shutdown / 测试都需要一个 "checkpoint" 路径。改成 enum 比开第二条 channel 简单,writer task 的 `select!` arity 不变。`Flush` ack 是 oneshot,sync 后 send。`Store::aof_flush().await` + `main.rs` 在 ctrl_c 之后 await 它,作为durability anchor — 不然 `subprocess.terminate()` 把 process 杀掉时 mpsc backlog 丢失(oracle 第一次跑被这个咬过)。
+2. **`Store::attach_aof(self, ...).await -> Self` 取代直接 `with_aof + 二次 replay`**:原 ADR 的 main flow 是 "new → replay → with_aof",but `with_aof` 内部又是 `new + open writer`,导致 replay 的 Inner 状态被丢弃。`attach_aof` 接受一个 already-populated store,只 graft AofWriter,不重建 Inner。`with_aof` 现在是 `new().attach_aof(...)` 的 convenience wrapper。
+3. **`Store::execute` = `aof_encode → execute_no_aof → 条件 append`**:原 ADR 说"hook in execute",落地时 split 成两个方法。`execute_no_aof` 是 public(replay 用),`execute` 在 reply 不是 `Reply::Error(_)` 时 append。INCR-on-non-integer 这种 user-error 不进 AOF — 不然 replay 会重新返回相同 error,浪费 IO。整数解码 test `incr_error_does_not_append_to_aof` 守这条。
+4. **`parse_writable_frame` 私有 helper 在 storage 里复制 dispatch 的 6 个 verb 解析**:storage 不依赖 server::dispatch(layer rule, cs01 CLAUDE.md §4)。落地复制了 SET / DEL / EXPIRE / PERSIST / INCR / DECR 的 RESP-array 解析。Hand-edited AOF 含 GET / TYPE 之类的 read-only 命令时,parser 返回 `None` 并被 replay 静默跳过 — 安全但被 `replay_skips_non_writable_frames_without_failing` test 覆盖。
+5. **SIGINT-only graceful shutdown**(non-Windows):tokio 默认只 handle `ctrl_c`(SIGINT),不接 SIGTERM。`subprocess.Popen.terminate()` 发 SIGTERM 直接 kill process,mpsc queue 丢失。Oracle harness (`tests/oracle_aof.py::stop_our_server`) 改为 `proc.send_signal(signal.SIGINT)`,文档 + 注释里都说明了。M4 release-readiness 可加 SIGTERM handler。
+6. **`commands_total` 计数器在 replay 期间 不 增长**:`Store::execute_no_aof` 不触发 handle_conn 的 fetch_add(那是 server crate per-conn 计数),所以 replay 完后 `state.commands_total == 0`。测试 `replay_does_not_inflate_commands_total` 守这条 — 否则 dashboard 在重启后会看到"启动就 N 个命令"的迷惑数字。
+
+## Final oracle matrix verification (post-impl, 2026-05-12)
+
+本地 `CS01_RUN_ORACLE=1 bash tests/oracle.sh` 跑 35 / 35 通过:
+
+- 22 RESP fixtures (M1.4 baseline)
+- 6 pubsub fixtures (M3.1)
+- 7 AOF restart-roundtrip fixtures (M3.2,8 observations vs real `redis:7-alpine --appendonly yes`)
+
+`oracle_aof.py` 用独立 docker container + 独立 port(避免和 baseline 容器抢 `/data`),kill-and-restart 双方,然后 diff GET / EXISTS / TTL / TYPE 8 项 — 全 match。
