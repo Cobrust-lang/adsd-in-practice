@@ -40,4 +40,4 @@ M4.3 在 `web/src-tauri/` 增加 Tauri v2 app。桌面壳复用现有 SvelteKit 
 CTO 守闸退回后补两项 runtime hardening:
 
 - sidecar 不再把 stdout/stderr 接到未 drain 的 pipe,改为 `Stdio::null()`,避免长跑或异常日志填满 pipe buffer 阻塞 `redis-server`。
-- `/api/stats`、`/api/keys`、`/api/pubsub` SSE response 增加最小 CORS header。Tauri production UI 从 app/WebView origin 发起 `EventSource(http://127.0.0.1:6381/api/*)`,按跨源浏览器请求处理;server 返回 `Access-Control-Allow-Origin: *` 且不使用 credentials,同时保持 listener loopback-only。
+- `/api/stats`、`/api/keys`、`/api/pubsub` SSE response 改为最小 CORS allowlist,不再使用 wildcard。允许的 dev browser origin 是 `http://localhost:5173` / `http://127.0.0.1:5173`;允许的 Tauri v2 app origin 是 `tauri://localhost` 以及 Tauri/wry documented workaround `http://tauri.localhost` / `https://tauri.localhost`。无 `Origin` 时不返回 CORS header;非 allowlist origin 不返回 `Access-Control-Allow-Origin`。这样保留 Tauri `EventSource(http://127.0.0.1:6381/api/*)` 能力,同时避免任意网页跨源读取本机 loopback control plane(尤其 `/api/keys`)。
