@@ -1,0 +1,183 @@
+//! RESP TCP listener (ADR-0005, Option A).
+//!
+//! Accept-loop pattern:
+//! ```text
+//! TcpListener::accept
+//!   → spawn(handle_conn)
+//!     → loop {
+//!         read_buf into BytesMut
+//!         while let Ok((frame, n)) = Frame::parse(&buf) {
+//!             buf.advance(n);
+//!             let cmd = dispatch::from_frame(frame);
+//!             let reply = store.execute(cmd?)?;
+//!             socket.write_all(&reply_to_frame(reply).to_bytes()).await;
+//!         }
+//!       }
+//! ```
+//!
+//! Locked sub-decisions (ADR-0005):
+//! - Per-connection task via `tokio::spawn` (fault isolation).
+//! - `BytesMut::with_capacity(4096)` + manual drain — **no** `Framed`
+//!   codec (that would re-wrap the pure-function parser; F24 candidate).
+//! - Protocol error → send `-ERR ...` then close socket.
+//! - `QUIT` → send `+OK`, then close socket (caller-side responsibility).
+//! - Graceful shutdown M1.3 simplification: `ctrl_c` breaks the accept
+//!   loop; in-flight tasks finish naturally.  M3 upgrades to drain mode.
+//!
+//! TODO(M3): max-frame-size guard — currently `BytesMut` grows without
+//! bound, so a malicious `$<u64::MAX>` could trigger a large alloc.
+
+use std::io;
+use std::net::SocketAddr;
+
+use bytes::{Buf, BytesMut};
+use redis_protocol::{Frame, ProtocolError};
+use redis_storage::{Command, Store};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream};
+
+use crate::dispatch::from_frame;
+use crate::encode::reply_to_frame;
+
+/// Bind a `TcpListener` on `addr`, accept connections forever, and
+/// dispatch each one to `handle_conn`.
+///
+/// Shuts down on `tokio::signal::ctrl_c`: the accept loop exits and
+/// already-spawned per-connection tasks finish naturally (no in-flight
+/// deadline in M1.3; M3 will upgrade to drain mode).
+///
+/// # Errors
+///
+/// Returns `io::Error` if the listener cannot bind.  Per-connection
+/// IO errors are logged but **never** propagated — one bad connection
+/// must not kill the server (ADR-0005 §"Consequences/正面").
+pub async fn run(addr: SocketAddr, store: Store) -> io::Result<()> {
+    let listener = TcpListener::bind(addr).await?;
+    let local_addr = listener.local_addr()?;
+    tracing::info!(addr = %local_addr, "RESP listener bound");
+    run_on(listener, store).await
+}
+
+/// Run the accept loop on an already-bound `TcpListener`.
+///
+/// Split from [`run`] so integration tests can bind on `127.0.0.1:0`,
+/// read back the OS-assigned port, and exercise the *exact* same
+/// accept loop the production binary uses.
+///
+/// Note: this variant does **not** install a `ctrl_c` handler — tests
+/// stop the loop by aborting the spawned task or dropping the
+/// owning `Store` (which lets the listener's task exit naturally on
+/// the next iteration).  The production [`run`] wraps it with the
+/// signal handler.
+///
+/// # Errors
+///
+/// Per-connection IO errors are logged, not propagated.  This
+/// function only returns when its `select!` arm chooses `ctrl_c`
+/// (production) or the task is aborted (tests).
+pub async fn run_on(listener: TcpListener, store: Store) -> io::Result<()> {
+    loop {
+        tokio::select! {
+            accept = listener.accept() => {
+                match accept {
+                    Ok((socket, peer)) => {
+                        let store = store.clone();
+                        tokio::spawn(async move {
+                            if let Err(e) = handle_conn(socket, store).await {
+                                tracing::warn!(peer = %peer, error = %e, "conn closed with error");
+                            }
+                        });
+                    }
+                    Err(e) => {
+                        // Accept errors are typically transient (e.g.,
+                        // EMFILE).  Log and continue rather than crash.
+                        tracing::warn!(error = %e, "accept failed");
+                    }
+                }
+            }
+            _ = tokio::signal::ctrl_c() => {
+                tracing::info!("ctrl_c received — shutting down");
+                return Ok(());
+            }
+        }
+    }
+}
+
+/// Drive a single client connection: read into `BytesMut`, drain all
+/// complete `Frame`s, dispatch each, write the reply, repeat.
+///
+/// On peer EOF (`read_buf == 0`) the function returns `Ok(())`.
+///
+/// On `ProtocolError::Invalid` or `ProtocolError::Utf8`, an `-ERR ...`
+/// reply is best-effort-sent and the connection is closed (returns Ok).
+///
+/// On `Command::Quit`, the `+OK` reply is flushed and the function
+/// returns (which drops the socket).
+async fn handle_conn(mut socket: TcpStream, store: Store) -> io::Result<()> {
+    let mut buf = BytesMut::with_capacity(4096);
+
+    loop {
+        // 1. Read more bytes.  read_buf grows the BytesMut on demand.
+        if socket.read_buf(&mut buf).await? == 0 {
+            // Peer closed.  If there's stale data in the buffer it's
+            // an incomplete frame — treat as a clean disconnect.
+            return Ok(());
+        }
+
+        // 2. Drain as many complete frames as we have buffered.  Set
+        //    `close_after = true` if a QUIT was processed; we still
+        //    flush its reply before returning so the client sees `+OK`.
+        let mut close_after = false;
+        loop {
+            match Frame::parse(&buf[..]) {
+                Ok((frame, n)) => {
+                    // Dispatch frame → command (or arity-error Reply).
+                    let reply = match from_frame(frame) {
+                        Ok(cmd) => {
+                            // Mark socket-close intent BEFORE handing the
+                            // command to the store (ADR-0005 watchout).
+                            if matches!(cmd, Command::Quit) {
+                                close_after = true;
+                            }
+                            // Store::execute is infallible at the wire
+                            // level (StoreError is internal-only); map
+                            // any future StoreError to a generic ERR
+                            // reply rather than panicking.
+                            match store.execute(cmd) {
+                                Ok(r) => r,
+                                Err(e) => redis_storage::Reply::Error(format!("ERR internal: {e}")),
+                            }
+                        }
+                        Err(reply) => reply,
+                    };
+
+                    let frame_out = reply_to_frame(reply);
+                    socket.write_all(&frame_out.to_bytes()).await?;
+                    buf.advance(n);
+                }
+                Err(ProtocolError::Incomplete) => {
+                    // Need more bytes from the socket.
+                    break;
+                }
+                Err(ProtocolError::Invalid(msg)) => {
+                    // Best-effort: report error then close.  ADR-0005
+                    // locks the message format with the literal "ERR "
+                    // prefix; the Frame::Error variant adds the `-`.
+                    let err_frame = Frame::Error(format!("ERR Protocol error: {msg}"));
+                    let _ = socket.write_all(&err_frame.to_bytes()).await;
+                    return Ok(());
+                }
+                Err(ProtocolError::Utf8(e)) => {
+                    let err_frame = Frame::Error(format!("ERR Protocol error: utf-8: {e}"));
+                    let _ = socket.write_all(&err_frame.to_bytes()).await;
+                    return Ok(());
+                }
+            }
+        }
+
+        if close_after {
+            // QUIT — reply already flushed above; drop the socket.
+            return Ok(());
+        }
+    }
+}
