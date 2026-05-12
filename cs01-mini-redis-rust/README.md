@@ -178,8 +178,8 @@ CS01_TAURI_FULL_BUILD=1 bash scripts/tauri-gate.sh
 - ✅ M2 frontend MVP: Axum HTTP/SSE control plane + SvelteKit dashboard
 - ✅ M3 Pub/Sub + AOF
 - ✅ M4.1 critical fixes: security + AOF + dispatch + Pub/Sub hardening
-- 🚧 M4.2 doc sweep + release artifacts ([ADR-0012](docs/agent/adr/0012-m4-2-doc-sweep-release-artifacts.md))
-- ⬜ M4.3 Tauri desktop frontend + managed sidecar ([ADR-0013](docs/agent/adr/0013-tauri-desktop-frontend.md)); rust-embed single-binary deferred
+- ✅ M4.2 doc sweep + release artifacts ([ADR-0012](docs/agent/adr/0012-m4-2-doc-sweep-release-artifacts.md))
+- ✅ M4.3 Tauri desktop frontend source + managed sidecar lightweight gate ([ADR-0013](docs/agent/adr/0013-tauri-desktop-frontend.md)); full bundle/signing verification remains release-readiness work; rust-embed single-binary deferred
 
 ## Docs
 

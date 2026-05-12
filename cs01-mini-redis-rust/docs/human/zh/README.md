@@ -64,7 +64,7 @@ cargo run -p redis-server -- --port 6380 --aof data/dump.aof
 
 ## 状态
 
-✅ M1 backend MVP;✅ M2 frontend/control-plane MVP;✅ M3 Pub/Sub + AOF;✅ M4.1 critical fixes;🚧 M4.2 doc sweep + release artifacts;⬜ M4.3 Tauri desktop frontend。rust-embed 单 binary 已 deferred,不再是 v0.1.0 blocker。
+✅ M1 backend MVP;✅ M2 frontend/control-plane MVP;✅ M3 Pub/Sub + AOF;✅ M4.1 critical fixes;✅ M4.2 doc sweep + release artifacts;✅ M4.3 Tauri desktop frontend source + managed sidecar lightweight gate。完整 bundle/signing 验证仍是 release-readiness work;rust-embed 单 binary 已 deferred,不再是 v0.1.0 blocker。
 
 ## License
 

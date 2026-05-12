@@ -24,5 +24,5 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Thi
 
 ### Known gaps before final `v0.1.0`
 
-- M4.3 Tauri desktop shell is not implemented in this wave.
+- M4.3 Tauri desktop shell source, lightweight gate, sidecar lifecycle, and allowlisted CORS are integrated; full platform bundle/signing/notarization remains a release-readiness task and must be run explicitly with disk usage recorded.
 - AUTH, TLS, replication, cluster, Lua, streams, modules, RDB, PSUBSCRIBE/PUNSUBSCRIBE, and full transaction semantics remain out of scope for cs01 `0.1.0`.

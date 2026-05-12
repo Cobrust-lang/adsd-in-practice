@@ -5,7 +5,7 @@ status: accepted
 date: 2026-05-13
 case: cs01-mini-redis-rust
 supersedes: ADR-0008 rust-embed release target; ADR-0012 M4.3 rust-embed-only framing
-last_verified_commit: pending
+last_verified_commit: 6f04a12
 ---
 
 # ADR-0013: Tauri desktop frontend becomes the primary release surface

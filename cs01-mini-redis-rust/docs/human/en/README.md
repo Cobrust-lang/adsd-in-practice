@@ -64,7 +64,7 @@ See full ADRs in [`docs/agent/adr/`](../../agent/adr/). English abstracts:
 
 ## Status
 
-M1 backend MVP; M2 frontend/control-plane MVP; M3 Pub/Sub + AOF; M4.1 critical fixes are shipped. M4.2 doc sweep + release artifacts is in progress, and M4.3 Tauri desktop frontend remains pending. rust-embed single-binary packaging is deferred and is no longer a v0.1.0 blocker.
+M1 backend MVP; M2 frontend/control-plane MVP; M3 Pub/Sub + AOF; M4.1 critical fixes; M4.2 doc sweep + release artifacts; and M4.3 Tauri desktop frontend source + managed sidecar lightweight gate are shipped. Full bundle/signing verification remains release-readiness work. rust-embed single-binary packaging is deferred and is no longer a v0.1.0 blocker.
 
 ## License
 

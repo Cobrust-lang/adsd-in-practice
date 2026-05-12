@@ -60,8 +60,8 @@ done
 
 **Wave M4**(release):
 10. ✅ M4.1 critical fixes shipped @ d02aa55(ADR-0011)
-11. 🚧 M4.2 release artifacts + doc sweep(ADR-0012)
-12. ⬜ M4.3 Tauri desktop frontend + managed `redis-server` sidecar(ADR-0013);rust-embed 不再是 v0.1.0 primary blocker
+11. ✅ M4.2 release artifacts + doc sweep(ADR-0012)
+12. ✅ M4.3 Tauri desktop frontend source + managed `redis-server` sidecar lightweight gate(ADR-0013);full bundle/signing verification 仍是 release-readiness work;rust-embed 不再是 v0.1.0 primary blocker
 
 ## 4. 引用结构
 
