@@ -1,0 +1,16 @@
+# Rust build artefacts
+target/
+**/*.rs.bk
+
+# Frontend artefacts (ADR-0008 §"Cross-references → 新文件清单")
+node_modules/
+web/build/
+web/.svelte-kit/
+
+# Editor / OS
+.DS_Store
+*.swp
+*.swo
+
+# Local data (e.g. AOF dumps from manual smoke runs)
+data/

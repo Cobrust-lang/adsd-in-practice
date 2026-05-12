@@ -1,0 +1,35 @@
+{
+  "name": "cs01-mini-redis-web",
+  "version": "0.1.0",
+  "private": true,
+  "description": "cs01 mini-redis-rust SvelteKit dashboard (ADR-0008, Wave M2.2).",
+  "license": "(Apache-2.0 OR MIT)",
+  "type": "module",
+  "engines": {
+    "node": ">=20",
+    "pnpm": ">=9"
+  },
+  "scripts": {
+    "dev": "vite dev",
+    "build": "vite build",
+    "preview": "vite preview",
+    "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
+    "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
+    "test": "vitest"
+  },
+  "devDependencies": {
+    "@sveltejs/adapter-static": "3.0.10",
+    "@sveltejs/kit": "2.59.1",
+    "@sveltejs/vite-plugin-svelte": "7.1.2",
+    "@tailwindcss/vite": "4.3.0",
+    "@types/node": "25.7.0",
+    "daisyui": "5.5.19",
+    "jsdom": "29.1.1",
+    "svelte": "5.55.5",
+    "svelte-check": "4.4.8",
+    "tailwindcss": "4.3.0",
+    "typescript": "6.0.3",
+    "vite": "8.0.12",
+    "vitest": "4.1.6"
+  }
+}
