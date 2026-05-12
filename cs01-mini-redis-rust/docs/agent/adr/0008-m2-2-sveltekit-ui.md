@@ -5,7 +5,7 @@ status: accepted
 date: 2026-05-12
 case: cs01-mini-redis-rust
 supersedes: none
-last_verified_commit: pending
+last_verified_commit: f5a94ab
 ---
 
 # ADR-0008: M2.2 SvelteKit UI
@@ -185,3 +185,13 @@ cd web && pnpm dev   # vite 在 5173,proxy /api → 6381
 - `web/` 单独 `.gitignore`,但顶层 cs01 还要把 `target/` `node_modules/` `web/build/` `web/.svelte-kit/` 包进 `.gitignore`(检查有没有)
 - 浏览器 smoke 不是 CI gate — M2.2 sprint 内 P9 跑一次,报告里贴结果。**Release-readiness wave 时再正规化**(M4 拉 playwright headless 跑端到端)
 - ADR-0009 候选:**自动从 Rust 类型生成 TypeScript schema**(`ts-rs` 或 `specta` crate),M3 之前不接
+
+### P9 implementation deltas vs spec (M2.2 ship, commit `f5a94ab`)
+
+记录 P9 ship 时跟原 spec 的偏离,便于 CTO review:
+
+1. **`postcss.config.js` 没创建** — §"Done Criteria → Scaffold" 列了它,但 §Notes 已说 Tailwind 4 不需要 PostCSS。P9 verify 在 Tailwind 4 + `@tailwindcss/vite` + DaisyUI 5 通过 `@plugin "daisyui"` 在 `src/app.css` 直接加载,无需 `postcss.config.js`。`tailwind.config.ts` 保留(IntelliSense 友好,内容最小)。
+2. **`vite.config.ts` 用 `vitest/config` 的 `defineConfig`**(不是 `vite` 的) — 这样 `test: { … }` field 才能类型检查通过。P9 第一版用 `vite/defineConfig` 时被 svelte-check 报错 `'test' does not exist in type 'UserConfigExport'`,改后 0 errors。
+3. **TypeScript 6.0.3** 与 SvelteKit 2.59 的 `^5.3.3 || ^6.0.0` peer range 兼容,无降级需要。
+4. **Frontmatter `last_verified_commit` 由 P9 在 ADR stamp 提交里更新**(commit `f5a94ab` 是 impl commit;本 stamp 在其后的小 commit)。
+5. **手动浏览器 smoke**:P9 通过 `curl --noproxy '*' http://localhost:5173/{,/keys,/pubsub}` + `curl /api/stats|/api/keys` 验证;SPA shell 三个 route 都 serve(SPA fallback works),SSE 走 vite proxy 显示实时帧(`keys_active: 2` after 2 个 RESP SET)。**真浏览器视觉验证留给 CTO merge 前手测。**
