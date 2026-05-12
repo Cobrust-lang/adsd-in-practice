@@ -10,6 +10,8 @@
 
 #![forbid(unsafe_code)]
 
+pub mod glob;
+
 use std::sync::Arc;
 
 use futures_util::StreamExt as _;
@@ -31,11 +33,16 @@ pub enum StoreError {
 /// Top-level command enum (decoded from RESP `Array(Some(bulk*))`).
 ///
 /// Wave M1 — covers PING / GET / SET / DEL / EXISTS / INCR / DECR
-///            + ECHO / SELECT / QUIT (M1.3, ADR-0005).
+///            + ECHO / SELECT / QUIT (M1.3, ADR-0005)
+///            + EXPIRE / TTL / PERSIST / TYPE / KEYS (M1.4, ADR-0006).
 /// Wave M3 — adds SUBSCRIBE / PUBLISH / UNSUBSCRIBE.
 #[derive(Debug, Clone)]
 pub enum Command {
-    Ping,
+    /// `PING` or `PING <message>`.  With `Some(bytes)` returns the bytes
+    /// as a bulk string (matches real Redis).  With `None` returns `+PONG`.
+    Ping {
+        message: Option<Vec<u8>>,
+    },
     Get {
         key: String,
     },
@@ -69,6 +76,35 @@ pub enum Command {
     /// The store side returns `Reply::Ok`; the socket close is the
     /// caller's (server crate) responsibility — see ADR-0005.
     Quit,
+
+    // ── M1.4 (ADR-0006) ─────────────────────────────────────────────────
+    /// `EXPIRE key seconds` — set / reset TTL on an existing key.
+    /// Returns `Integer(1)` on success, `Integer(0)` when key absent.
+    Expire {
+        key: String,
+        seconds: i64,
+    },
+    /// `TTL key` — Redis wire semantics:
+    /// `-2` = key absent, `-1` = key without TTL, otherwise remaining secs.
+    Ttl {
+        key: String,
+    },
+    /// `PERSIST key` — clear TTL on existing key.
+    /// Returns `Integer(1)` when an existing TTL was cleared,
+    /// `Integer(0)` otherwise (no TTL or key absent).
+    Persist {
+        key: String,
+    },
+    /// `TYPE key` — single-string build: `"string"` or `"none"`.
+    /// Returns `SimpleString` (matches Redis wire format).
+    Type {
+        key: String,
+    },
+    /// `KEYS pattern` — glob-match all live keys.  Returns `Array(Some(_))`
+    /// of `BulkString(Some(_))` entries.  See [`glob::matches`].
+    Keys {
+        pattern: String,
+    },
 }
 
 /// Reply enum (encoded to RESP frame at the server boundary).
@@ -79,6 +115,16 @@ pub enum Reply {
     Integer(i64),
     Ok,
     Error(String),
+    /// M1.4 (ADR-0006): `+<string>\r\n` simple string reply.
+    /// Used by `TYPE` (`+string\r\n` / `+none\r\n`).  Distinct from
+    /// `Bulk` because the RESP wire bytes differ — we do NOT abuse
+    /// `Bulk(Some)` to fake `SimpleString` (F24 defence).
+    SimpleString(String),
+    /// M1.4 (ADR-0006): RESP array of bulk strings.  Used by `KEYS`.
+    /// `None` represents the nil array (RESP `*-1\r\n`); v0.1 only emits
+    /// `Some(_)` (possibly empty), but the variant carries the option
+    /// for symmetry with the underlying `Frame::Array`.
+    Array(Option<Vec<Vec<u8>>>),
 }
 
 /// A single stored entry.
@@ -168,7 +214,12 @@ impl Store {
     /// "Key not found" maps to `Reply::Bulk(None)`, not an error.
     pub fn execute(&self, cmd: Command) -> Result<Reply, StoreError> {
         match cmd {
-            Command::Ping => Ok(Reply::Pong),
+            Command::Ping { message } => match message {
+                // `PING` with no message → `+PONG\r\n`.
+                None => Ok(Reply::Pong),
+                // `PING hello` → `$5\r\nhello\r\n` bulk string (matches Redis).
+                Some(bytes) => Ok(Reply::Bulk(Some(bytes))),
+            },
 
             Command::Get { key } => {
                 let guard = self.inner.read();
@@ -259,7 +310,111 @@ impl Store {
             // server crate responsible for closing the socket *after*
             // flushing this reply.
             Command::Quit => Ok(Reply::Ok),
+
+            // ── M1.4 (ADR-0006) ──────────────────────────────────────────
+            // Each M1.4 arm is delegated to a per-command method to keep
+            // the top-level dispatch match readable (ADR-0004 §Notes).
+            Command::Expire { key, seconds } => Ok(self.do_expire(key, seconds)),
+            Command::Ttl { key } => Ok(Self::do_ttl(&self.inner, &key)),
+            Command::Persist { key } => Ok(Self::do_persist(&self.inner, &key)),
+            Command::Type { key } => Ok(Self::do_type(&self.inner, &key)),
+            Command::Keys { pattern } => Ok(Self::do_keys(&self.inner, &pattern)),
         }
+    }
+
+    // ── M1.4 (ADR-0006) per-command helpers ─────────────────────────────────
+
+    /// `EXPIRE key seconds` — DelayQueue Option A:
+    /// rewrite `entry.expires_at` AND send a fresh `(key, dur)` to
+    /// `ttl_tx`.  The old DelayQueue entry, when it fires, will check
+    /// `entry.expires_at <= now` and skip if mismatched — that guard
+    /// already exists in `Store::new()`'s background task.
+    fn do_expire(&self, key: String, seconds: i64) -> Reply {
+        let mut guard = self.inner.write();
+        if !guard.map.contains_key(&key) {
+            return Reply::Integer(0);
+        }
+        // Negative / zero TTL on real Redis deletes the key immediately.
+        if seconds <= 0 {
+            guard.map.remove(&key);
+            return Reply::Integer(1);
+        }
+        let secs_u64: u64 = u64::try_from(seconds).unwrap_or(0);
+        let new_expires_at = Instant::now() + std::time::Duration::from_secs(secs_u64);
+        if let Some(entry) = guard.map.get_mut(&key) {
+            entry.expires_at = Some(new_expires_at);
+        }
+        drop(guard);
+        let _ = self
+            .ttl_tx
+            .send((key, std::time::Duration::from_secs(secs_u64)));
+        Reply::Integer(1)
+    }
+
+    /// `TTL key` — Redis wire semantics:
+    /// `-2 = absent`, `-1 = no TTL`, otherwise floor((expires_at − now).as_secs()).
+    fn do_ttl(inner: &Arc<RwLock<Inner>>, key: &str) -> Reply {
+        let guard = inner.read();
+        let now = Instant::now();
+        match guard.map.get(key) {
+            None => Reply::Integer(-2),
+            Some(entry) => match entry.expires_at {
+                None => Reply::Integer(-1),
+                Some(t) if t <= now => Reply::Integer(-2),
+                Some(t) => {
+                    let remaining = t.saturating_duration_since(now);
+                    let secs: i64 = remaining.as_secs().try_into().unwrap_or(i64::MAX);
+                    Reply::Integer(secs)
+                }
+            },
+        }
+    }
+
+    /// `PERSIST key` — clear TTL on existing key.  The stale DelayQueue
+    /// entry, when fired, will check `expires_at == None` → skip.
+    fn do_persist(inner: &Arc<RwLock<Inner>>, key: &str) -> Reply {
+        let mut guard = inner.write();
+        match guard.map.get_mut(key) {
+            None => Reply::Integer(0),
+            Some(entry) => {
+                if entry.expires_at.is_some() {
+                    entry.expires_at = None;
+                    Reply::Integer(1)
+                } else {
+                    Reply::Integer(0)
+                }
+            }
+        }
+    }
+
+    /// `TYPE key` — v0.1: `"string"` or `"none"` SimpleString.
+    fn do_type(inner: &Arc<RwLock<Inner>>, key: &str) -> Reply {
+        let guard = inner.read();
+        let now = Instant::now();
+        let kind = match guard.map.get(key) {
+            Some(entry) if entry.expires_at.is_none_or(|t| t > now) => "string",
+            _ => "none",
+        };
+        Reply::SimpleString(kind.to_owned())
+    }
+
+    /// `KEYS pattern` — full keyspace scan with glob match.  Skips
+    /// logically-expired entries (mirrors EXISTS).  CLAUDE.md §3.3:
+    /// the matcher takes byte slices and does not allocate per call.
+    fn do_keys(inner: &Arc<RwLock<Inner>>, pattern: &str) -> Reply {
+        let guard = inner.read();
+        let now = Instant::now();
+        let pattern_bytes = pattern.as_bytes();
+        let mut out: Vec<Vec<u8>> = Vec::with_capacity(guard.map.len());
+        for (k, entry) in &guard.map {
+            if entry.expires_at.is_some_and(|t| t <= now) {
+                continue;
+            }
+            if glob::matches(pattern_bytes, k.as_bytes()) {
+                out.push(k.as_bytes().to_vec());
+            }
+        }
+        Reply::Array(Some(out))
     }
 
     /// Shared INCR/DECR implementation.
@@ -319,9 +474,22 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn store_ping() {
+    async fn store_ping_no_message() {
         let s = Store::new();
-        let r = s.execute(Command::Ping).expect("ping infallible");
+        let r = s
+            .execute(Command::Ping { message: None })
+            .expect("ping infallible");
         assert_eq!(r, Reply::Pong);
+    }
+
+    #[tokio::test]
+    async fn store_ping_with_message_returns_bulk() {
+        let s = Store::new();
+        let r = s
+            .execute(Command::Ping {
+                message: Some(b"hello".to_vec()),
+            })
+            .expect("ping infallible");
+        assert_eq!(r, Reply::Bulk(Some(b"hello".to_vec())));
     }
 }

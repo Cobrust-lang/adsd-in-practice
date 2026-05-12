@@ -20,7 +20,7 @@ fn parse(input: &[u8]) -> Frame {
 fn dispatch_ping() {
     let frame = parse(b"*1\r\n$4\r\nPING\r\n");
     let cmd = from_frame(frame).expect("PING must parse");
-    assert!(matches!(cmd, Command::Ping));
+    assert!(matches!(cmd, Command::Ping { message: None }));
 }
 
 // ── ADR-0004 Criterion 2 ─────────────────────────────────────────────────────
