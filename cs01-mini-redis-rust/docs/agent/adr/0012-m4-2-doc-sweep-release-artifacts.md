@@ -5,7 +5,7 @@ status: accepted
 date: 2026-05-12
 case: cs01-mini-redis-rust
 supersedes: none
-last_verified_commit: pending
+last_verified_commit: f664ead
 ---
 
 # ADR-0012: M4.2 doc sweep + release artifacts
