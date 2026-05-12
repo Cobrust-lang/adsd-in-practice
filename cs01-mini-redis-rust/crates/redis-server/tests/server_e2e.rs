@@ -813,3 +813,189 @@ async fn quit_in_sub_mode_closes_socket_after_ok() {
     assert_eq!(buf, b"+OK\r\n");
     srv.abort();
 }
+
+// ── M3.2 (ADR-0010) AOF restart-roundtrip ──────────────────────────────────
+
+use std::path::PathBuf;
+
+use redis_storage::FsyncPolicy;
+
+/// RAII temp-AOF guard: removes the file on Drop so parallel test
+/// runs don't leak.  No `tempfile` workspace dep (ADR-0010 §"No new
+/// workspace deps").
+struct E2eTempAof {
+    path: PathBuf,
+}
+
+impl E2eTempAof {
+    fn new(stem: &str) -> Self {
+        let pid = std::process::id();
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos());
+        let mut path = std::env::temp_dir();
+        path.push(format!("cs01-aof-e2e-{stem}-{pid}-{nonce}.aof"));
+        Self { path }
+    }
+}
+
+impl Drop for E2eTempAof {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+/// Bind a fresh listener with a `Store::with_aof`-equipped state.
+/// Caller owns the JoinHandle and aborts it to simulate server kill.
+async fn spawn_server_with_aof(
+    path: PathBuf,
+    fsync: FsyncPolicy,
+) -> (u16, JoinHandle<std::io::Result<()>>, Store) {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind 127.0.0.1:0");
+    let port = listener.local_addr().expect("local_addr").port();
+    // Run replay against an in-memory store (file may not yet exist
+    // on a first run), then attach AOF.
+    let store = Store::new();
+    let count = store
+        .replay_from_path(&path)
+        .expect("replay_from_path during e2e setup");
+    if count > 0 {
+        // Tracing isn't initialised in tests; print so the harness
+        // log captures it.
+        eprintln!(
+            "server e2e: replayed {count} commands from {}",
+            path.display()
+        );
+    }
+    let store = store.attach_aof(path, fsync).await.expect("attach_aof");
+    let state = AppState::new(store.clone(), DEFAULT_MAX_FRAME_SIZE);
+    let handle = tokio::spawn(async move { server::run_on(listener, state).await });
+    (port, handle, store)
+}
+
+/// Server-A → write SET k1 v1 / SET k2 v2 EX 100 / DEL k1 → kill.
+/// Server-B → restart same AOF → GET k1 = nil, GET k2 = v2, TTL k2 ≈ 100.
+///
+/// `FsyncPolicy::Always` so the file is durable by the time `abort`
+/// runs; the explicit `store.aof_flush().await` is the test-side
+/// belt-and-braces (matches the storage-crate aof.rs test pattern).
+#[tokio::test]
+async fn restart_round_trip_via_two_listeners() {
+    let temp = E2eTempAof::new("rt-two-listeners");
+
+    // ── Server-A ────────────────────────────────────────────────────────
+    {
+        let (port, srv, store) =
+            spawn_server_with_aof(temp.path.clone(), FsyncPolicy::Always).await;
+        let mut sock = connect(port).await;
+
+        // SET k1 v1
+        sock.write_all(b"*3\r\n$3\r\nSET\r\n$2\r\nk1\r\n$2\r\nv1\r\n")
+            .await
+            .expect("set k1");
+        let _ = read_exact_n(&mut sock, b"+OK\r\n".len()).await;
+
+        // SET k2 v2 EX 100
+        sock.write_all(b"*5\r\n$3\r\nSET\r\n$2\r\nk2\r\n$2\r\nv2\r\n$2\r\nEX\r\n$3\r\n100\r\n")
+            .await
+            .expect("set k2 ex");
+        let _ = read_exact_n(&mut sock, b"+OK\r\n".len()).await;
+
+        // DEL k1
+        sock.write_all(b"*2\r\n$3\r\nDEL\r\n$2\r\nk1\r\n")
+            .await
+            .expect("del k1");
+        let _ = read_exact_n(&mut sock, b":1\r\n".len()).await;
+
+        // Flush AOF then "kill" the server.
+        store.aof_flush().await;
+        srv.abort();
+    }
+
+    // ── Server-B ────────────────────────────────────────────────────────
+    let (port, srv, _store) = spawn_server_with_aof(temp.path.clone(), FsyncPolicy::Always).await;
+    let mut sock = connect(port).await;
+
+    // GET k1 → nil
+    sock.write_all(b"*2\r\n$3\r\nGET\r\n$2\r\nk1\r\n")
+        .await
+        .expect("get k1");
+    let nil = read_exact_n(&mut sock, b"$-1\r\n".len()).await;
+    assert_eq!(nil, b"$-1\r\n", "k1 must be gone after DEL");
+
+    // GET k2 → v2
+    sock.write_all(b"*2\r\n$3\r\nGET\r\n$2\r\nk2\r\n")
+        .await
+        .expect("get k2");
+    let v = read_exact_n(&mut sock, b"$2\r\nv2\r\n".len()).await;
+    assert_eq!(v, b"$2\r\nv2\r\n");
+
+    // TTL k2 — must be ~100 (allow 99..=100 for drift).
+    sock.write_all(b"*2\r\n$3\r\nTTL\r\n$2\r\nk2\r\n")
+        .await
+        .expect("ttl k2");
+    let mut buf = [0u8; 16];
+    let n = sock.read(&mut buf).await.expect("read ttl");
+    let s = String::from_utf8_lossy(&buf[..n]);
+    assert!(s.starts_with(':'), "ttl prefix");
+    let val: i64 = s
+        .trim_start_matches(':')
+        .trim_end_matches("\r\n")
+        .parse()
+        .expect("integer body");
+    assert!((99..=100).contains(&val), "expected TTL ~100, got {val}");
+
+    srv.abort();
+}
+
+/// Counter (commands_total) must NOT advance during replay — replay
+/// re-enters via `Store::execute_no_aof` which bypasses the per-conn
+/// counter (the counter is bumped in `handle_conn` per parsed RESP
+/// frame).  Verified by counting RESP-side traffic only.
+#[tokio::test]
+async fn replay_does_not_inflate_commands_total() {
+    let temp = E2eTempAof::new("counter-no-replay");
+
+    // Phase 1 — write 3 commands.
+    {
+        let (port, srv, store) =
+            spawn_server_with_aof(temp.path.clone(), FsyncPolicy::Always).await;
+        let mut sock = connect(port).await;
+        for cmd in [
+            &b"*3\r\n$3\r\nSET\r\n$1\r\nk\r\n$1\r\nv\r\n"[..],
+            &b"*2\r\n$4\r\nINCR\r\n$1\r\nc\r\n"[..],
+            &b"*2\r\n$4\r\nINCR\r\n$1\r\nc\r\n"[..],
+        ] {
+            sock.write_all(cmd).await.expect("write cmd");
+        }
+        // Drain replies (each is short).
+        let mut buf = vec![0u8; 256];
+        let _ = sock.read(&mut buf).await;
+        store.aof_flush().await;
+        srv.abort();
+    }
+
+    // Phase 2 — restart.  After replay we expect the AppState's
+    // commands_total to be 0 (no RESP frames have arrived yet).
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let _port = listener.local_addr().expect("local_addr").port();
+    let s = Store::new();
+    let count = s.replay_from_path(&temp.path).expect("replay");
+    assert_eq!(count, 3, "phase 2 replayed all 3 commands");
+    let s = s
+        .attach_aof(temp.path.clone(), FsyncPolicy::Always)
+        .await
+        .expect("attach");
+    let state = AppState::new(s, DEFAULT_MAX_FRAME_SIZE);
+
+    // No RESP frames have arrived yet — commands_total must be 0.
+    let snap = state.snapshot_stats();
+    assert_eq!(
+        snap.commands_total, 0,
+        "replay must NOT advance commands_total"
+    );
+    // And the keys are still in the store.
+    assert_eq!(snap.keys_active, 2, "k + c");
+}

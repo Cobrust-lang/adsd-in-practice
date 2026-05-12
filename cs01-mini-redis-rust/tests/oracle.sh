@@ -206,9 +206,32 @@ else
     echo "oracle.sh: python3 not on PATH or oracle_pubsub.py missing — pubsub fixtures skipped"
 fi
 
+# ── M3.2 (ADR-0010) AOF restart-roundtrip fixtures ───────────────────────────
+# This harness spins up its OWN redis-7-alpine container (with
+# `--appendonly yes`) and its OWN copy of our server (with `--aof`)
+# because it needs to kill + restart both processes to verify
+# replay.  It uses different ports (CS01_AOF_*_PORT) so it doesn't
+# collide with the still-running oracle on $ORACLE_PORT / our server
+# on $OUR_PORT.
+
+AOF_SCRIPT="$ROOT/tests/oracle_aof.py"
+if command -v python3 >/dev/null 2>&1 && [[ -f "$AOF_SCRIPT" ]]; then
+    echo
+    echo "oracle.sh: running AOF harness (oracle_aof.py)"
+    python3 "$AOF_SCRIPT"
+    aof_rc=$?
+    if [[ "$aof_rc" -ne 0 ]]; then
+        echo "oracle.sh: AOF harness failed (rc=$aof_rc)"
+        exit 1
+    fi
+else
+    echo "oracle.sh: python3 not on PATH or oracle_aof.py missing — AOF fixtures skipped"
+fi
+
 # ── Summary ──────────────────────────────────────────────────────────────────
 
 echo
 echo "oracle.sh: $total / $total RESP commands matched real Redis"
 echo "oracle.sh: pubsub harness completed (see lines above)"
+echo "oracle.sh: AOF harness completed (see lines above)"
 exit 0
