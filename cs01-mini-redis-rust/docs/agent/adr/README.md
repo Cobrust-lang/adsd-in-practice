@@ -16,6 +16,7 @@
 | [0008](0008-m2-2-sveltekit-ui.md) | M2.2 — SvelteKit UI (dashboard / keys / pubsub-stub) consuming M2.1 SSE | accepted | 2026-05-12 |
 | [0009](0009-m3-1-pubsub.md) | M3.1 — Pub/Sub (SUBSCRIBE / UNSUBSCRIBE / PUBLISH) + per-conn subscriber state + /pubsub UI swap | accepted | 2026-05-12 |
 | [0010](0010-m3-2-aof-persistence.md) | M3.2 — AOF append-only persistence + replay-on-restart | accepted | 2026-05-12 |
+| [0011](0011-m4-1-critical-fixes.md) | M4.1 — Critical fixes (security + constitution drift + AOF hardening + parser strictness) | accepted | 2026-05-12 |
 
 ## 命名规范
 
