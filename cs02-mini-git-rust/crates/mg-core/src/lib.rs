@@ -15,9 +15,11 @@ pub enum Error {
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
     #[error("invalid object: {0}")]
-    InvalidObject(&'static str),
-    #[error("hash mismatch")]
-    HashMismatch,
+    InvalidObject(String),
+    #[error("unsupported object kind: {0}")]
+    UnsupportedKind(String),
+    #[error("hash mismatch: expected {expected}, got {actual}")]
+    HashMismatch { expected: String, actual: String },
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

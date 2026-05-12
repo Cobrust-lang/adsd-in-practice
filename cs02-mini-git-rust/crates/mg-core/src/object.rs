@@ -1,10 +1,18 @@
 //! Git object model: Blob / Tree / Commit / Tag.
 //!
-//! M1.0 scaffold — Blob first, Tree/Commit at M2/M3.
+//! M1 implements Git-compatible blob identity plus zlib loose-object IO.
 
-use crate::Result;
+use std::fs::{self, File};
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
 
-/// Object kind. v0.1.0 supports Blob; Tree/Commit at M2/M3.
+use flate2::Compression;
+use flate2::read::ZlibDecoder;
+use flate2::write::ZlibEncoder;
+
+use crate::{Error, Result};
+
+/// Object kind. v0.1.0 M1 pretty-prints Blob; Tree/Commit/Tag parsing is reserved for later waves.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
     Blob,
@@ -23,6 +31,27 @@ impl Kind {
             Self::Tag => "tag",
         }
     }
+}
+
+impl std::str::FromStr for Kind {
+    type Err = Error;
+
+    fn from_str(value: &str) -> Result<Self> {
+        match value {
+            "blob" => Ok(Self::Blob),
+            "tree" => Ok(Self::Tree),
+            "commit" => Ok(Self::Commit),
+            "tag" => Ok(Self::Tag),
+            other => Err(Error::UnsupportedKind(other.to_owned())),
+        }
+    }
+}
+
+/// A decoded loose object.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DecodedObject {
+    pub kind: Kind,
+    pub payload: Vec<u8>,
 }
 
 /// Serialize an object kind + payload into the `kind size\0payload` form
@@ -44,20 +73,88 @@ pub fn hash(kind: Kind, payload: &[u8]) -> String {
     crate::hash::sha1_hex(&header_payload(kind, payload))
 }
 
-/// Loose object write path:
-/// 1. compute hash of `header + payload`
-/// 2. zlib-compress `header + payload`
-/// 3. write to `.mg/objects/<aa>/<bb..>` (first two hex chars / rest)
+/// Return the filesystem path for a loose object under `<mg_dir>/objects`.
+#[must_use]
+pub fn loose_path(mg_dir: &Path, sha: &str) -> PathBuf {
+    let (prefix, suffix) = sha.split_at(2);
+    mg_dir.join("objects").join(prefix).join(suffix)
+}
+
+/// Write a zlib-compressed loose object to `.mg/objects/<aa>/<bb..>`.
 ///
-/// M1.1 stub — implementation lands at M1.1.
-///
-/// # Errors
-///
-/// Returns IO error if `.mg/objects/` cannot be written.
-pub fn write_loose(_kind: Kind, _payload: &[u8], _mg_dir: &std::path::Path) -> Result<String> {
-    Err(crate::Error::InvalidObject(
-        "write_loose not yet implemented (M1.1)",
-    ))
+/// Returns the SHA-1 object ID.
+pub fn write_loose(kind: Kind, payload: &[u8], mg_dir: &Path) -> Result<String> {
+    let object_bytes = header_payload(kind, payload);
+    let sha = crate::hash::sha1_hex(&object_bytes);
+    let path = loose_path(mg_dir, &sha);
+    let parent = path
+        .parent()
+        .ok_or_else(|| Error::InvalidObject("loose object path has no parent".to_owned()))?;
+    fs::create_dir_all(parent)?;
+
+    if path.exists() {
+        return Ok(sha);
+    }
+
+    let mut zlib_writer = ZlibEncoder::new(Vec::new(), Compression::default());
+    zlib_writer.write_all(&object_bytes)?;
+    let compressed = zlib_writer.finish()?;
+    fs::write(path, compressed)?;
+    Ok(sha)
+}
+
+/// Read and validate a zlib-compressed loose object by SHA-1.
+pub fn read_loose(mg_dir: &Path, sha: &str) -> Result<DecodedObject> {
+    validate_sha1_hex(sha)?;
+    let path = loose_path(mg_dir, sha);
+    let file = File::open(path)?;
+    let mut decoder = ZlibDecoder::new(file);
+    let mut encoded = Vec::new();
+    decoder.read_to_end(&mut encoded)?;
+
+    let actual = crate::hash::sha1_hex(&encoded);
+    if actual != sha {
+        return Err(Error::HashMismatch {
+            expected: sha.to_owned(),
+            actual,
+        });
+    }
+
+    decode(&encoded)
+}
+
+/// Decode `kind size\0payload` bytes after zlib inflation.
+pub fn decode(encoded: &[u8]) -> Result<DecodedObject> {
+    let nul = encoded
+        .iter()
+        .position(|byte| *byte == 0)
+        .ok_or_else(|| Error::InvalidObject("object header missing NUL separator".to_owned()))?;
+    let header = std::str::from_utf8(&encoded[..nul])
+        .map_err(|_| Error::InvalidObject("object header is not UTF-8".to_owned()))?;
+    let (kind_raw, size_raw) = header
+        .split_once(' ')
+        .ok_or_else(|| Error::InvalidObject("object header missing kind/size split".to_owned()))?;
+    let kind = kind_raw.parse::<Kind>()?;
+    let declared_size = size_raw
+        .parse::<usize>()
+        .map_err(|_| Error::InvalidObject("object size is not decimal usize".to_owned()))?;
+    let payload = encoded[nul + 1..].to_vec();
+    if payload.len() != declared_size {
+        return Err(Error::InvalidObject(format!(
+            "object size mismatch: declared {declared_size}, actual {}",
+            payload.len()
+        )));
+    }
+    Ok(DecodedObject { kind, payload })
+}
+
+fn validate_sha1_hex(sha: &str) -> Result<()> {
+    if sha.len() != 40 || !sha.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(Error::InvalidObject(
+            "expected a 40-character SHA-1 hex object ID".to_owned(),
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -65,12 +162,40 @@ mod tests {
     use super::*;
 
     #[test]
-    fn blob_hash_hello() {
-        // Same fixture as hash::tests::sha1_known_blob,
-        // but going through the object header construction.
+    fn blob_hash_empty_matches_git_fixture() {
+        assert_eq!(
+            hash(Kind::Blob, b""),
+            "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"
+        );
+    }
+
+    #[test]
+    fn blob_hash_hello_without_newline_matches_git_fixture() {
         assert_eq!(
             hash(Kind::Blob, b"hello"),
             "b6fc4c620b67d95f953a5c1c1230aaab5db5a1b0"
         );
+    }
+
+    #[test]
+    fn decode_round_trips_blob_payload() {
+        let decoded = decode(&header_payload(Kind::Blob, b"hello\n"))
+            .expect("valid blob header should decode");
+        assert_eq!(decoded.kind, Kind::Blob);
+        assert_eq!(decoded.payload, b"hello\n");
+    }
+
+    #[test]
+    fn write_and_read_loose_blob_round_trip() {
+        let tmp = std::env::temp_dir().join(format!("mg-core-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(tmp.join("objects")).expect("test temp object dir should be created");
+        let sha = write_loose(Kind::Blob, b"hello", &tmp).expect("loose write should succeed");
+        assert_eq!(sha, "b6fc4c620b67d95f953a5c1c1230aaab5db5a1b0");
+        assert!(loose_path(&tmp, &sha).is_file());
+        let decoded = read_loose(&tmp, &sha).expect("loose read should succeed");
+        assert_eq!(decoded.kind, Kind::Blob);
+        assert_eq!(decoded.payload, b"hello");
+        fs::remove_dir_all(&tmp).expect("test temp object dir should be removed");
     }
 }
