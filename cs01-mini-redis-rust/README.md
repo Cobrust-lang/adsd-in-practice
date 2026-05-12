@@ -27,7 +27,8 @@
 - ✅ Pub/Sub:`SUBSCRIBE / UNSUBSCRIBE / PUBLISH`
 - ✅ SvelteKit 监控 UI:实时连接数 / qps / 内存占用 / key 列表(SSE)
 - ✅ Axum HTTP control plane(`/api/stats` / `/api/keys` SSE)
-- ✅ 单 binary 部署(rust-embed 嵌入 web)
+- 🚧 Tauri desktop frontend + managed `redis-server` sidecar(M4.3,ADR-0013)
+- ⬜ rust-embed 单 binary 部署(ADR-0013 后不再是 v0.1.0 blocker)
 - ✅ 与 `redis-cli` 互通(对照 oracle,F23-A 防御)
 - ✅ 5 道 ADSD gate green
 
@@ -68,11 +69,11 @@ cargo run -p redis-server -- --port 6380 --aof data/dump.aof
 redis-cli -p 6380 PING
 ```
 
-监控 UI(M4 单 binary 部署):`http://localhost:6380/_studio`(从 server binary 暴露,rust-embed 在 M4 接入)。M2.2 在 dev 模式下走 vite,见下一节。
+监控 UI 的 primary release surface 已在 ADR-0013 转向 Tauri desktop app + managed `redis-server` sidecar。浏览器 dev 模式继续走 vite,见下一节;rust-embed 单 binary 不再是 v0.1.0 blocker。
 
 ## Dev mode (M2.2)
 
-M2.2(Wave M2.2,ADR-0008)ship 了 SvelteKit 前端(`web/`),三页:Dashboard / Keys / Pub/Sub。M2.2 阶段**还没** rust-embed 进 binary —— 是 vite dev + axum HTTP control plane 两进程协作,**M4 才接** rust-embed。
+M2.2(Wave M2.2,ADR-0008)ship 了 SvelteKit 前端(`web/`),三页:Dashboard / Keys / Pub/Sub。M2.2 阶段是 vite dev + axum HTTP control plane 两进程协作;ADR-0013 后,M4.3 primary release target 改为 Tauri desktop app 管理 `redis-server` sidecar。
 
 ```bash
 # Terminal 1 — backend(RESP :6380 + HTTP/SSE :6381)
@@ -105,7 +106,7 @@ Required tooling:`node ≥ 20`, `pnpm ≥ 9`(本机 `node v25.9.0` + `pnpm 10.33
 
 ```
 ┌──────────────────────────────────────────┐
-│ SvelteKit UI (embedded via rust-embed)   │
+│ SvelteKit UI (Tauri desktop shell target)│
 │ - /_studio/dashboard                      │
 │ - /_studio/keys                           │
 │ - /_studio/pubsub                         │
@@ -130,9 +131,11 @@ Required tooling:`node ≥ 20`, `pnpm ≥ 9`(本机 `node v25.9.0` + `pnpm 10.33
 
 - ✅ M0 scaffold
 - ✅ M1 backend MVP(RESP + 11 commands + docker oracle 22/22)
-- 🚧 M2 frontend MVP(M2.1 Axum HTTP/SSE control plane shipped; M2.2 SvelteKit UI shipped — Pub/Sub 页是 M3 stub)
-- ⬜ M3 Pub/Sub + AOF
-- ⬜ M4 v0.1.0 release + rust-embed 单 binary + METHODOLOGY-STATUS 更新
+- ✅ M2 frontend MVP(M2.1 Axum HTTP/SSE control plane shipped; M2.2 SvelteKit UI shipped)
+- ✅ M3 Pub/Sub + AOF
+- ✅ M4.1 critical fixes(security + AOF + dispatch + Pub/Sub)
+- 🚧 M4.2 doc sweep + release artifacts(ADR-0012)
+- 🚧 M4.3 Tauri desktop frontend + managed sidecar(ADR-0013);rust-embed 单 binary deferred
 
 ## License
 

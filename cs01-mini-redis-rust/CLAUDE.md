@@ -59,14 +59,15 @@ done
 9. AOF append + replay on restart
 
 **Wave M4**(release):
-10. rust-embed + 单 binary + release-readiness check
+10. release artifacts + doc sweep(M4.2,ADR-0012)
+11. Tauri desktop frontend + managed `redis-server` sidecar(M4.3,ADR-0013);rust-embed 不再是 v0.1.0 primary blocker
 
 ## 4. 引用结构
 
 - `redis-protocol` crate:**纯函数**,RESP encode/decode。无 IO。
 - `redis-storage` crate:存储 + AOF + expiry。无网络。
 - `redis-server` crate:Axum + tokio + RESP TCP listener。依赖前两者。
-- `web/` 是 SvelteKit project,通过 rust-embed 嵌入 redis-server binary。
+- `web/` 是 SvelteKit project;M4.3 起 primary frontend surface 转为 Tauri desktop app + managed `redis-server` sidecar(ADR-0013)。rust-embed 不再是 v0.1.0 blocker。
 
 依赖单向:`server → storage` / `server → protocol` / **`storage → protocol`(仅为 AOF wire compatibility,ADR-0010 论证)**。**`protocol → storage` 反向禁止**;**`server → server` 不允许**(避免循环)。
 
