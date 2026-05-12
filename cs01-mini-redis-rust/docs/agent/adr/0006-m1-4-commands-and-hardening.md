@@ -80,6 +80,8 @@ M1.4 把这 8 件事打包,作为本 case M1 wave 收尾。
 - **选**:严格按 Redis:`-2 = key 不存在`,`-1 = key 存在但无 TTL`,否则剩余秒数(`i64`,向下取整 `floor((expires_at - now).as_secs())`)
 - 实现:`Reply::Integer(value)`,无歧义
 
+> **Addendum (2026-05-12, commit `0800d86`)** — Phase 2 跑 docker oracle 时发现真 Redis 7 用的是 **round-half-up**(`(pttl_ms + 500) / 1000`,见 redis 源 `src/expire.c`),不是 floor。P9 在 sprint 内修正为 round-half-up,oracle 22/22 match。本节 §"选" 行的 `floor(...)` 表述**保留作 audit 轨**,但实际语义按 Addendum 为准。详见 finding `m1-4-f23a-oracle-caught-ttl-rounding-spec-bug.md`,F23-A 在 sprint 内捕获 spec-vs-real-Redis 偏差的**正面案例**。
+
 ### KEYS glob 实现
 
 #### Option A: 自己写 ~50 行 matcher 支持 `*` / `?` / `[a-z]` / `\` 转义(选中)
