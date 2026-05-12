@@ -11,6 +11,7 @@
 | [m1-1-p9-missed-shared-doc-coverage](m1-1-p9-missed-shared-doc-coverage.md) | P2 | closed by mitigation | — | F17.x(新 sub-case 候选) | 2026-05-12 |
 | [m1-3-cto-wrote-code-instead-of-dispatching](m1-3-cto-wrote-code-instead-of-dispatching.md) | P1 | closed by M1.3 P9 redispatch | 0005 | new candidate: CTO-as-implementer (F18 sub-pattern) | 2026-05-12 |
 | [m1-4-f23a-oracle-caught-ttl-rounding-spec-bug](m1-4-f23a-oracle-caught-ttl-rounding-spec-bug.md) | P3 (positive) | closed in-sprint | 0006 | F23-A — first positive in-action case for ADSD | 2026-05-12 |
+| [m2-1-no-f23a-on-control-plane](m2-1-no-f23a-on-control-plane.md) | P4 | accepted gap | 0007 | F23-A.gap — oracle-not-applicable when domain has no reference impl | 2026-05-12 |
 
 ## 命名规范
 

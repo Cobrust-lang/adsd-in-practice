@@ -8,7 +8,7 @@ description = "In-memory KV + TTL + AOF persistence (cs01)"
 
 [dependencies]
 bytes.workspace = true
-futures-util = { version = "0.3", default-features = false }
+futures-util.workspace = true
 hashbrown.workspace = true
 parking_lot = "0.12"
 thiserror.workspace = true

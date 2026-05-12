@@ -7,8 +7,10 @@
 //! Wave M1.4 (ADR-0006) — adds `--max-frame-size` to bound the
 //! per-connection buffer size as a basic DoS guard.
 //!
-//! `--http-port` and `--aof` are reserved for M2 (SSE) and M3 (AOF)
-//! and currently logged as informational placeholders.
+//! Wave M2.1 (ADR-0007) — adds the Axum HTTP control plane on
+//! `--http-port` (default 6381).  Pass `--http-port 0` to disable;
+//! only the RESP listener will start.  `--aof` is still an M3
+//! placeholder, logged informationally.
 
 #![forbid(unsafe_code)]
 
@@ -16,6 +18,7 @@ use std::net::{IpAddr, SocketAddr};
 
 use clap::Parser;
 use redis_server::server::DEFAULT_MAX_FRAME_SIZE;
+use redis_server::state::AppState;
 use redis_storage::Store;
 
 #[derive(Parser, Debug)]
@@ -25,11 +28,12 @@ struct Args {
     #[arg(long, default_value_t = 6380)]
     port: u16,
 
-    /// RESP TCP bind address
+    /// RESP TCP bind address (shared by RESP + HTTP listener)
     #[arg(long, default_value = "0.0.0.0")]
     bind: String,
 
-    /// HTTP control-plane port (M2 placeholder — not yet wired)
+    /// HTTP control-plane port.  Set to 0 to disable the HTTP
+    /// listener (only RESP will start).
     #[arg(long, default_value_t = 6381)]
     http_port: u16,
 
@@ -59,7 +63,7 @@ async fn main() -> anyhow::Result<()> {
         .bind
         .parse()
         .map_err(|e| anyhow::anyhow!("invalid --bind address {bind:?}: {e}", bind = args.bind))?;
-    let addr = SocketAddr::new(ip, args.port);
+    let resp_addr = SocketAddr::new(ip, args.port);
 
     let max_frame_size: usize = usize::try_from(args.max_frame_size).map_err(|_| {
         anyhow::anyhow!(
@@ -74,11 +78,44 @@ async fn main() -> anyhow::Result<()> {
         http_port = args.http_port,
         aof = ?args.aof,
         max_frame_size,
-        "mini-redis-server starting (M1.4)"
+        "mini-redis-server starting (M2.1)"
     );
 
     let store = Store::new();
-    redis_server::server::run(addr, store, max_frame_size).await?;
+    let state = AppState::new(store, max_frame_size);
+
+    // RESP listener — always on.
+    let resp_state = state.clone();
+    let resp_handle = tokio::spawn(async move {
+        redis_server::server::run(resp_addr, resp_state)
+            .await
+            .map_err(anyhow::Error::from)
+    });
+
+    // HTTP listener — opt-out via `--http-port 0`.
+    let http_handle = if args.http_port == 0 {
+        tracing::info!("HTTP listener disabled (--http-port 0)");
+        None
+    } else {
+        let http_addr = SocketAddr::new(ip, args.http_port);
+        let http_state = state.clone();
+        Some(tokio::spawn(async move {
+            redis_server::http::run(http_addr, http_state)
+                .await
+                .map_err(anyhow::Error::from)
+        }))
+    };
+
+    // Wait for both listeners.  Linux delivers SIGINT to the whole
+    // process so both ctrl_c arms fire simultaneously; if one
+    // listener crashes we surface its error.
+    if let Some(http_handle) = http_handle {
+        let (resp_res, http_res) = tokio::try_join!(resp_handle, http_handle)?;
+        resp_res?;
+        http_res?;
+    } else {
+        resp_handle.await??;
+    }
 
     tracing::info!("mini-redis-server stopped cleanly");
     Ok(())
