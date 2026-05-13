@@ -8,6 +8,7 @@
 pub mod hash;
 pub mod index;
 pub mod object;
+pub mod repo;
 
 use thiserror::Error;
 
@@ -19,6 +20,8 @@ pub enum Error {
     InvalidObject(String),
     #[error("invalid index: {0}")]
     InvalidIndex(String),
+    #[error("invalid repository: {0}")]
+    InvalidRepo(String),
     #[error("unsupported object kind: {0}")]
     UnsupportedKind(String),
     #[error("hash mismatch: expected {expected}, got {actual}")]
