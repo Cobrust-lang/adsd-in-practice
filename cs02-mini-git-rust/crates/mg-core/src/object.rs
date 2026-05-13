@@ -1,7 +1,9 @@
 //! Git object model: Blob / Tree / Commit / Tag.
 //!
-//! M1 implements Git-compatible blob identity plus zlib loose-object IO.
+//! M3 implements Git-compatible loose-object IO plus recursive tree and commit
+//! payload construction for the minimal repository workflow.
 
+use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -12,7 +14,7 @@ use flate2::write::ZlibEncoder;
 
 use crate::{Error, Result};
 
-/// Object kind. v0.1.0 M1 pretty-prints Blob; Tree/Commit/Tag parsing is reserved for later waves.
+/// Object kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
     Blob,
@@ -52,6 +54,30 @@ impl std::str::FromStr for Kind {
 pub struct DecodedObject {
     pub kind: Kind,
     pub payload: Vec<u8>,
+}
+
+/// A regular-file tree entry or subtree entry for canonical tree objects.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TreeEntry {
+    pub mode: u32,
+    pub name: String,
+    pub object_id: [u8; 20],
+}
+
+/// Commit author/committer identity used in the raw Git commit payload.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Signature {
+    pub name: String,
+    pub email: String,
+    pub date: String,
+}
+
+impl Signature {
+    /// Render `Name <email> seconds timezone`.
+    #[must_use]
+    pub fn render(&self) -> String {
+        format!("{} <{}> {}", self.name, self.email, self.date)
+    }
 }
 
 /// Serialize an object kind + payload into the `kind size\0payload` form
@@ -148,51 +174,31 @@ pub fn decode(encoded: &[u8]) -> Result<DecodedObject> {
     Ok(DecodedObject { kind, payload })
 }
 
-/// A regular-file tree entry for flat canonical tree objects.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TreeEntry {
-    pub mode: u32,
-    pub name: String,
-    pub object_id: [u8; 20],
-}
-
-impl TreeEntry {
-    /// Construct a tree entry from an index entry.
-    pub fn from_index_entry(entry: &crate::index::Entry) -> Result<Self> {
-        let name = entry
-            .path
-            .to_str()
-            .ok_or_else(|| Error::InvalidObject("tree paths must be UTF-8 in M2".to_owned()))?
-            .to_owned();
-        if name.is_empty() || name.contains('/') || name.as_bytes().contains(&0) {
-            return Err(Error::InvalidObject(
-                "M2 tree entries support only flat non-empty filenames".to_owned(),
-            ));
-        }
-        Ok(Self {
-            mode: entry.mode,
-            name,
-            object_id: entry.object_id,
-        })
+/// Write recursive tree objects for all staged entries and return the root tree SHA.
+pub fn write_tree_from_index(entries: &[crate::index::Entry], mg_dir: &Path) -> Result<String> {
+    let mut root = TreeNode::default();
+    for entry in entries {
+        root.insert(entry)?;
     }
+    write_tree_node(&root, mg_dir)
 }
 
-/// Encode a flat canonical tree payload as `<mode> <name>\0<raw 20-byte oid>` entries.
+/// Encode one canonical tree payload as `<mode> <name>\0<raw 20-byte oid>` entries.
 pub fn tree_payload(entries: &[TreeEntry]) -> Result<Vec<u8>> {
     let mut sorted = entries.to_vec();
-    sorted.sort_by_key(tree_sort_key);
+    sorted.sort_by(tree_entry_cmp);
 
     let mut out = Vec::new();
     for entry in &sorted {
-        if !matches!(entry.mode, 0o100_644 | 0o100_755) {
+        if !matches!(entry.mode, 0o100_644 | 0o100_755 | 0o040_000) {
             return Err(Error::InvalidObject(format!(
-                "unsupported tree mode {mode:o}; M2 supports regular files only",
+                "unsupported tree mode {mode:o}; M3 supports regular files and trees only",
                 mode = entry.mode
             )));
         }
         if entry.name.is_empty() || entry.name.contains('/') || entry.name.as_bytes().contains(&0) {
             return Err(Error::InvalidObject(
-                "M2 tree entries support only flat non-empty filenames".to_owned(),
+                "tree entries require flat non-empty names".to_owned(),
             ));
         }
         out.extend_from_slice(format!("{:o} {}", entry.mode, entry.name).as_bytes());
@@ -202,17 +208,166 @@ pub fn tree_payload(entries: &[TreeEntry]) -> Result<Vec<u8>> {
     Ok(out)
 }
 
-fn tree_sort_key(entry: &TreeEntry) -> Vec<u8> {
-    entry.name.as_bytes().to_vec()
+/// Build a raw Git commit payload.
+pub fn commit_payload(
+    tree: &str,
+    parents: &[String],
+    author: &Signature,
+    committer: &Signature,
+    message: &str,
+) -> Result<Vec<u8>> {
+    validate_sha1_hex(tree)?;
+    let mut out = String::new();
+    out.push_str("tree ");
+    out.push_str(tree);
+    out.push('\n');
+    for parent in parents {
+        validate_sha1_hex(parent)?;
+        out.push_str("parent ");
+        out.push_str(parent);
+        out.push('\n');
+    }
+    out.push_str("author ");
+    out.push_str(&author.render());
+    out.push('\n');
+    out.push_str("committer ");
+    out.push_str(&committer.render());
+    out.push_str("\n\n");
+    out.push_str(message);
+    if !message.ends_with('\n') {
+        out.push('\n');
+    }
+    Ok(out.into_bytes())
 }
 
-fn validate_sha1_hex(sha: &str) -> Result<()> {
+/// Parse the first parent from a commit payload.
+pub fn first_parent(payload: &[u8]) -> Result<Option<String>> {
+    let text = std::str::from_utf8(payload)
+        .map_err(|_| Error::InvalidObject("commit payload is not UTF-8".to_owned()))?;
+    for line in text.lines() {
+        if line.is_empty() {
+            break;
+        }
+        if let Some(parent) = line.strip_prefix("parent ") {
+            validate_sha1_hex(parent)?;
+            return Ok(Some(parent.to_owned()));
+        }
+    }
+    Ok(None)
+}
+
+/// Parse the subject line from a commit payload.
+pub fn commit_subject(payload: &[u8]) -> Result<String> {
+    let text = std::str::from_utf8(payload)
+        .map_err(|_| Error::InvalidObject("commit payload is not UTF-8".to_owned()))?;
+    let Some((_, message)) = text.split_once("\n\n") else {
+        return Ok(String::new());
+    };
+    Ok(message.lines().next().unwrap_or("").to_owned())
+}
+
+/// Validate a 40-character SHA-1 hex object ID.
+pub fn validate_sha1_hex(sha: &str) -> Result<()> {
     if sha.len() != 40 || !sha.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return Err(Error::InvalidObject(
             "expected a 40-character SHA-1 hex object ID".to_owned(),
         ));
     }
     Ok(())
+}
+
+#[derive(Debug, Default)]
+struct TreeNode {
+    files: BTreeMap<String, TreeEntry>,
+    dirs: BTreeMap<String, TreeNode>,
+}
+
+impl TreeNode {
+    fn insert(&mut self, entry: &crate::index::Entry) -> Result<()> {
+        crate::index::validate_relative_path(&entry.path)?;
+        let parts = path_parts(&entry.path)?;
+        self.insert_parts(&parts, entry)
+    }
+
+    fn insert_parts(&mut self, parts: &[String], entry: &crate::index::Entry) -> Result<()> {
+        match parts {
+            [] => Err(Error::InvalidObject("empty tree path".to_owned())),
+            [file] => {
+                if self.dirs.contains_key(file) {
+                    return Err(Error::InvalidObject(format!(
+                        "path conflict: {file} is both file and directory"
+                    )));
+                }
+                self.files.insert(
+                    file.clone(),
+                    TreeEntry {
+                        mode: entry.mode,
+                        name: file.clone(),
+                        object_id: entry.object_id,
+                    },
+                );
+                Ok(())
+            }
+            [dir, rest @ ..] => {
+                if self.files.contains_key(dir) {
+                    return Err(Error::InvalidObject(format!(
+                        "path conflict: {dir} is both file and directory"
+                    )));
+                }
+                self.dirs
+                    .entry(dir.clone())
+                    .or_default()
+                    .insert_parts(rest, entry)
+            }
+        }
+    }
+}
+
+fn write_tree_node(node: &TreeNode, mg_dir: &Path) -> Result<String> {
+    let mut entries = Vec::new();
+    for file in node.files.values() {
+        entries.push(file.clone());
+    }
+    for (name, child) in &node.dirs {
+        let child_sha = write_tree_node(child, mg_dir)?;
+        let object_id = decode_sha1_hex(&child_sha)?;
+        entries.push(TreeEntry {
+            mode: 0o040_000,
+            name: name.clone(),
+            object_id,
+        });
+    }
+    let payload = tree_payload(&entries)?;
+    write_loose(Kind::Tree, &payload, mg_dir)
+}
+
+fn path_parts(path: &Path) -> Result<Vec<String>> {
+    let text = path
+        .to_str()
+        .ok_or_else(|| Error::InvalidObject("tree paths must be UTF-8".to_owned()))?;
+    Ok(text.split('/').map(ToOwned::to_owned).collect())
+}
+
+fn tree_entry_cmp(left: &TreeEntry, right: &TreeEntry) -> std::cmp::Ordering {
+    tree_sort_name(left).cmp(&tree_sort_name(right))
+}
+
+fn tree_sort_name(entry: &TreeEntry) -> Vec<u8> {
+    let mut key = entry.name.as_bytes().to_vec();
+    if entry.mode == 0o040_000 {
+        key.push(b'/');
+    }
+    key
+}
+
+fn decode_sha1_hex(sha: &str) -> Result<[u8; 20]> {
+    validate_sha1_hex(sha)?;
+    let bytes = hex::decode(sha).map_err(|_| {
+        Error::InvalidObject("expected a lowercase 40-character SHA-1 hex object ID".to_owned())
+    })?;
+    bytes
+        .try_into()
+        .map_err(|_| Error::InvalidObject("invalid SHA-1 byte length".to_owned()))
 }
 
 #[cfg(test)]
@@ -269,5 +424,25 @@ mod tests {
         let mut expected = b"100644 a.txt\0".to_vec();
         expected.extend_from_slice(&object_id);
         assert_eq!(payload, expected);
+    }
+
+    #[test]
+    fn commit_payload_matches_git_header_shape() {
+        let sig = Signature {
+            name: "A U Thor".to_owned(),
+            email: "a@example.com".to_owned(),
+            date: "1700000000 +0000".to_owned(),
+        };
+        let payload = commit_payload(
+            "0123456789abcdef0123456789abcdef01234567",
+            &["89abcdef0123456789abcdef0123456789abcdef".to_owned()],
+            &sig,
+            &sig,
+            "msg",
+        )
+        .expect("commit payload should encode");
+        let text = String::from_utf8(payload).expect("payload should be utf8");
+        assert!(text.contains("parent 89abcdef0123456789abcdef0123456789abcdef\n"));
+        assert!(text.ends_with("\n\nmsg\n"));
     }
 }

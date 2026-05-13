@@ -95,16 +95,16 @@ M3 owns the repository state boundary:
 ## Done Criteria
 
 - [ ] ADR-0003 is stamped with the M2 merge SHA and all M2 done criteria checked.
-- [ ] `mg-core::repo` discovers `.mg` upward from cwd and exposes worktree root / git dir paths.
-- [ ] `mg init` creates `.mg/objects`, `.mg/refs/heads`, `.mg/HEAD`, and `.mg/config` through library code.
-- [ ] `mg add <path>` works from repository root and subdirectories for regular files, storing slash-separated paths in index v2.
-- [ ] `mg write-tree` writes recursive tree objects for slash-separated staged paths.
-- [ ] `mg commit-tree <tree> [-p parent] -m <msg>` writes a commit object matching real Git under pinned identity/date env.
-- [ ] `mg commit -m <msg>` writes the index tree, uses current HEAD as parent when present, writes the commit, and advances `refs/heads/main`.
-- [ ] `mg log` traverses first-parent commits from HEAD and shows enough stable data to verify commit history.
-- [ ] The oracle verifies mg-written repositories with real Git: `git rev-parse HEAD`, `git cat-file -p`, `git ls-tree -r`, and `git log`.
-- [ ] The oracle keeps at least 1000 deterministic randomized regular-file path/content cases.
-- [ ] M3 gates pass: doc coverage, `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, `cargo test --workspace --locked`, and the Git oracle script.
+- [x] `mg-core::repo` discovers `.mg` upward from cwd and exposes worktree root / git dir paths.
+- [x] `mg init` creates `.mg/objects`, `.mg/refs/heads`, `.mg/HEAD`, and `.mg/config` through library code.
+- [x] `mg add <path>` works from repository root and subdirectories for regular files, storing slash-separated paths in index v2.
+- [x] `mg write-tree` writes recursive tree objects for slash-separated staged paths.
+- [x] `mg commit-tree <tree> [-p parent] -m <msg>` writes a commit object matching real Git under pinned identity/date env.
+- [x] `mg commit -m <msg>` writes the index tree, uses current HEAD as parent when present, writes the commit, and advances `refs/heads/main`.
+- [x] `mg log` traverses first-parent commits from HEAD and shows enough stable data to verify commit history.
+- [x] The oracle verifies mg-written repositories with real Git: `git rev-parse HEAD`, `git cat-file -p`, `git ls-tree -r`, and `git log`.
+- [x] The oracle keeps at least 1000 deterministic randomized regular-file path/content cases.
+- [x] M3 gates pass: doc coverage, `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, `cargo test --workspace --locked`, and the Git oracle script.
 
 ## Cross-references
 

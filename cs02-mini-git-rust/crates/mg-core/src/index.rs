@@ -1,10 +1,11 @@
-//! Git index v2 reader/writer for the CS-02 M2 stage-0 regular-file subset.
+//! Git index v2 reader/writer for the CS-02 stage-0 regular-file subset.
 //!
 //! The on-disk format is the binary `DIRC` format used by Git, including the
-//! trailing SHA-1 checksum over all preceding bytes.
+//! trailing SHA-1 checksum over all preceding bytes. M3 supports slash-separated
+//! worktree-relative regular-file paths.
 
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use sha1::{Digest, Sha1};
 
@@ -37,20 +38,18 @@ pub struct Entry {
 }
 
 impl Entry {
-    /// Build an index entry for a flat regular worktree file.
-    pub fn from_worktree_file(worktree_path: &Path, object_id_hex: &str) -> Result<Self> {
-        if !is_flat_relative_path(worktree_path) {
-            return Err(Error::InvalidIndex(format!(
-                "M2 supports only flat repository-root file paths, got {}",
-                worktree_path.display()
-            )));
-        }
-
-        let metadata = fs::metadata(worktree_path)?;
+    /// Build an index entry for a regular worktree file and slash-separated relative path.
+    pub fn from_worktree_file(
+        absolute_path: &Path,
+        relative_path: &Path,
+        object_id_hex: &str,
+    ) -> Result<Self> {
+        validate_relative_path(relative_path)?;
+        let metadata = fs::metadata(absolute_path)?;
         if !metadata.is_file() {
             return Err(Error::InvalidIndex(format!(
-                "mg add supports regular files only in M2, got {}",
-                worktree_path.display()
+                "mg add supports regular files only, got {}",
+                absolute_path.display()
             )));
         }
 
@@ -67,7 +66,7 @@ impl Entry {
             gid: metadata_gid(&metadata),
             file_size: u64_to_u32_saturating(metadata.len()),
             object_id,
-            path: worktree_path.to_path_buf(),
+            path: relative_path.to_path_buf(),
         })
     }
 
@@ -106,6 +105,36 @@ pub fn upsert_entry(mut entries: Vec<Entry>, entry: Entry) -> Vec<Entry> {
     entries
 }
 
+/// Validate a slash-separated worktree-relative regular-file path for the M3 subset.
+pub fn validate_relative_path(path: &Path) -> Result<()> {
+    if path.as_os_str().is_empty() || path.is_absolute() {
+        return Err(Error::InvalidIndex(format!(
+            "index paths must be non-empty and relative, got {}",
+            path.display()
+        )));
+    }
+    let text = path
+        .to_str()
+        .ok_or_else(|| Error::InvalidIndex("index paths must be UTF-8".to_owned()))?;
+    if text.as_bytes().contains(&0) || text.contains('\\') {
+        return Err(Error::InvalidIndex(format!(
+            "index path contains unsupported byte or separator: {text}"
+        )));
+    }
+    for component in path.components() {
+        match component {
+            Component::Normal(part) if !part.is_empty() => {}
+            _ => {
+                return Err(Error::InvalidIndex(format!(
+                    "index paths must be normalized relative file paths, got {}",
+                    path.display()
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Decode index bytes. Exposed for tests and fuzz-style fixtures.
 pub fn read_bytes(bytes: &[u8]) -> Result<Vec<Entry>> {
     if bytes.len() < 12 + SHA1_LEN {
@@ -129,7 +158,7 @@ pub fn read_bytes(bytes: &[u8]) -> Result<Vec<Entry>> {
     let version = read_u32(bytes, 4)?;
     if version != VERSION {
         return Err(Error::InvalidIndex(format!(
-            "unsupported index version {version}; M2 supports v2 only"
+            "unsupported index version {version}; M3 supports v2 only"
         )));
     }
     let entry_count = read_u32(bytes, 8)? as usize;
@@ -144,7 +173,7 @@ pub fn read_bytes(bytes: &[u8]) -> Result<Vec<Entry>> {
 
     if offset != checksum_start {
         return Err(Error::InvalidIndex(
-            "index extensions are out of scope for M2".to_owned(),
+            "index extensions are out of scope for M3".to_owned(),
         ));
     }
 
@@ -217,7 +246,7 @@ fn parse_entry(bytes: &[u8], mut offset: usize, checksum_start: usize) -> Result
 fn validate_regular_mode(mode: u32) -> Result<()> {
     if !matches!(mode, REGULAR_MODE_644 | REGULAR_MODE_755) {
         return Err(Error::InvalidIndex(format!(
-            "unsupported index mode {mode:o}; M2 supports regular files only"
+            "unsupported index mode {mode:o}; M3 supports regular files only"
         )));
     }
     Ok(())
@@ -226,13 +255,13 @@ fn validate_regular_mode(mode: u32) -> Result<()> {
 fn validate_stage0_flags(flags: u16) -> Result<usize> {
     if flags & FLAG_STAGE_MASK != 0 {
         return Err(Error::InvalidIndex(
-            "M2 supports only stage-0 index entries".to_owned(),
+            "M3 supports only stage-0 index entries".to_owned(),
         ));
     }
     let declared_path_len = usize::from(flags & FLAG_NAME_LEN_MASK);
     if declared_path_len == usize::from(FLAG_NAME_LEN_MASK) {
         return Err(Error::InvalidIndex(
-            "M2 does not support >=4095-byte index paths".to_owned(),
+            "M3 does not support >=4095-byte index paths".to_owned(),
         ));
     }
     Ok(declared_path_len)
@@ -257,12 +286,7 @@ fn parse_path(
         )));
     }
     let path = decode_path(raw_path)?;
-    if !is_flat_relative_path(&path) {
-        return Err(Error::InvalidIndex(format!(
-            "M2 supports only flat index paths, got {}",
-            path.display()
-        )));
-    }
+    validate_relative_path(&path)?;
     Ok((path, path_end))
 }
 
@@ -313,20 +337,15 @@ pub fn write_bytes(entries: &[Entry]) -> Result<Vec<u8>> {
 fn encode_entry(out: &mut Vec<u8>, entry: &Entry) -> Result<()> {
     if !matches!(entry.mode, REGULAR_MODE_644 | REGULAR_MODE_755) {
         return Err(Error::InvalidIndex(format!(
-            "unsupported index mode {mode:o}; M2 supports regular files only",
+            "unsupported index mode {mode:o}; M3 supports regular files only",
             mode = entry.mode
         )));
     }
-    if !is_flat_relative_path(&entry.path) {
-        return Err(Error::InvalidIndex(format!(
-            "M2 supports only flat index paths, got {}",
-            entry.path.display()
-        )));
-    }
+    validate_relative_path(&entry.path)?;
     let path = path_bytes(&entry.path);
     if path.len() >= usize::from(FLAG_NAME_LEN_MASK) {
         return Err(Error::InvalidIndex(
-            "M2 does not support >=4095-byte index paths".to_owned(),
+            "M3 does not support >=4095-byte index paths".to_owned(),
         ));
     }
 
@@ -401,25 +420,26 @@ fn decode_sha1_hex(sha: &str) -> Result<[u8; SHA1_LEN]> {
 }
 
 fn decode_path(path: &[u8]) -> Result<PathBuf> {
-    if path.is_empty() || path.iter().any(|byte| *byte == b'/' || *byte == 0) {
+    if path.is_empty() || path.contains(&0) {
         return Err(Error::InvalidIndex(
-            "M2 supports only non-empty flat paths without slash".to_owned(),
+            "index paths must be non-empty and NUL-free".to_owned(),
         ));
     }
     let value = std::str::from_utf8(path)
-        .map_err(|_| Error::InvalidIndex("M2 supports UTF-8 index paths only".to_owned()))?;
+        .map_err(|_| Error::InvalidIndex("M3 supports UTF-8 index paths only".to_owned()))?;
+    if value.contains('\\') {
+        return Err(Error::InvalidIndex(
+            "index paths must use slash separators".to_owned(),
+        ));
+    }
     Ok(PathBuf::from(value))
 }
 
 fn path_bytes(path: &Path) -> Vec<u8> {
-    path.to_string_lossy().as_bytes().to_vec()
-}
-
-fn is_flat_relative_path(path: &Path) -> bool {
-    !path.as_os_str().is_empty()
-        && path.is_relative()
-        && path.components().count() == 1
-        && !path_bytes(path).contains(&0)
+    path.to_string_lossy()
+        .replace('\\', "/")
+        .as_bytes()
+        .to_vec()
 }
 
 #[cfg(unix)]
@@ -547,9 +567,8 @@ fn i64_to_u32_saturating(value: i64) -> u32 {
 mod tests {
     use super::*;
 
-    #[test]
-    fn index_round_trip_preserves_entry_and_checksum() {
-        let entry = Entry {
+    fn fixture_entry(path: &str) -> Entry {
+        Entry {
             ctime_seconds: 1,
             ctime_nanoseconds: 2,
             mtime_seconds: 3,
@@ -561,8 +580,13 @@ mod tests {
             gid: 8,
             file_size: 9,
             object_id: [0x11; SHA1_LEN],
-            path: PathBuf::from("a.txt"),
-        };
+            path: PathBuf::from(path),
+        }
+    }
+
+    #[test]
+    fn index_round_trip_preserves_nested_entry_and_checksum() {
+        let entry = fixture_entry("src/a.txt");
         let bytes = write_bytes(std::slice::from_ref(&entry)).expect("index encode should succeed");
         let decoded = read_bytes(&bytes).expect("index decode should succeed");
         assert_eq!(decoded, vec![entry]);
@@ -570,25 +594,19 @@ mod tests {
 
     #[test]
     fn index_rejects_bad_checksum() {
-        let entry = Entry {
-            ctime_seconds: 0,
-            ctime_nanoseconds: 0,
-            mtime_seconds: 0,
-            mtime_nanoseconds: 0,
-            dev: 0,
-            ino: 0,
-            mode: REGULAR_MODE_644,
-            uid: 0,
-            gid: 0,
-            file_size: 0,
-            object_id: [0x22; SHA1_LEN],
-            path: PathBuf::from("b.txt"),
-        };
-        let mut bytes = write_bytes(&[entry]).expect("index encode should succeed");
+        let mut bytes =
+            write_bytes(&[fixture_entry("b.txt")]).expect("index encode should succeed");
         bytes[12] ^= 0xff;
         assert!(matches!(
             read_bytes(&bytes),
             Err(Error::HashMismatch { .. })
         ));
+    }
+
+    #[test]
+    fn relative_path_rejects_parent_components() {
+        assert!(validate_relative_path(Path::new("src/lib.rs")).is_ok());
+        assert!(validate_relative_path(Path::new("../lib.rs")).is_err());
+        assert!(validate_relative_path(Path::new("./lib.rs")).is_err());
     }
 }

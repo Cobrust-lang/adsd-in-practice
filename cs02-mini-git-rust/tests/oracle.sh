@@ -1,10 +1,17 @@
 #!/usr/bin/env bash
-# CS-02 oracle: compare mg object/index/tree behavior with real git.
+# CS-02 oracle: compare mg object/index/tree/commit behavior with real git.
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 MG_BIN="$ROOT/target/debug/mg"
-WORK="$ROOT/target/oracle-m2"
+WORK="$ROOT/target/oracle-m3"
+
+export GIT_AUTHOR_NAME='A U Thor'
+export GIT_AUTHOR_EMAIL='author@example.com'
+export GIT_AUTHOR_DATE='1700000000 +0000'
+export GIT_COMMITTER_NAME='C O Mitter'
+export GIT_COMMITTER_EMAIL='committer@example.com'
+export GIT_COMMITTER_DATE='1700000001 +0000'
 
 cargo build --manifest-path "$ROOT/Cargo.toml" --bin mg --locked >/dev/null
 rm -rf "$WORK"
@@ -16,6 +23,16 @@ assert_eq() {
     local context="$3"
     if [ "$expected" != "$actual" ]; then
         printf 'oracle mismatch: %s\nexpected: %s\nactual:   %s\n' "$context" "$expected" "$actual" >&2
+        exit 1
+    fi
+}
+
+assert_contains() {
+    local haystack="$1"
+    local needle="$2"
+    local context="$3"
+    if [[ "$haystack" != *"$needle"* ]]; then
+        printf 'oracle mismatch: %s\nmissing: %s\nactual:\n%s\n' "$context" "$needle" "$haystack" >&2
         exit 1
     fi
 }
@@ -90,6 +107,24 @@ mkdir -p "$GIT_REPO"
     assert_eq "$expected" "$mg_payload" "mg cat-file reads git-written blob"
 )
 
+copy_regular_tree() {
+    local src_dir="$1"
+    local dst_dir="$2"
+    mkdir -p "$dst_dir"
+    (cd "$src_dir" && find . -type d -exec mkdir -p "$dst_dir/{}" \;)
+    (cd "$src_dir" && find . -type f -exec cp "{}" "$dst_dir/{}" \;)
+}
+
+stage_all_regular_files() {
+    local repo_dir="$1"
+    (
+        cd "$repo_dir"
+        while IFS= read -r -d '' file; do
+            "$MG_BIN" add "${file#./}"
+        done < <(find . \( -path './.mg' -o -path './.mg/*' -o -path './.git' -o -path './.git/*' \) -prune -o -type f -print0 | LC_ALL=C sort -z)
+    )
+}
+
 stage_with_mg_and_compare_tree() {
     local src_dir="$1"
     local context="$2"
@@ -97,53 +132,55 @@ stage_with_mg_and_compare_tree() {
     local git_repo="$WORK/${context}-git"
     mkdir -p "$mg_repo" "$git_repo"
 
-    cp "$src_dir"/* "$mg_repo"/
-    cp "$src_dir"/* "$git_repo"/
+    copy_regular_tree "$src_dir" "$mg_repo"
+    copy_regular_tree "$src_dir" "$git_repo"
 
     (
         cd "$mg_repo"
         "$MG_BIN" init >/dev/null
-        for file in *; do
-            [ -f "$file" ] || continue
-            "$MG_BIN" add "$file"
-        done
-        mg_tree=$("$MG_BIN" write-tree)
-        git -C "$git_repo" init -q
-        (
-            cd "$git_repo"
-            git add .
-            git_tree=$(git write-tree)
-            assert_eq "$git_tree" "$mg_tree" "$context write-tree sha"
-        )
+    )
+    stage_all_regular_files "$mg_repo"
+    mg_tree=$(cd "$mg_repo" && "$MG_BIN" write-tree)
 
-        ls_stage=$(GIT_DIR="$mg_repo/.mg" GIT_WORK_TREE="$mg_repo" git ls-files --stage)
-        if [ -z "$ls_stage" ]; then
-            printf 'oracle mismatch: %s git ls-files --stage returned empty output\n' "$context" >&2
-            exit 1
-        fi
-        for file in *; do
-            [ -f "$file" ] || continue
-            blob_sha=$(git hash-object "$file")
-            expected_stage="100644 $blob_sha 0	$file"
+    (
+        cd "$git_repo"
+        git init -q
+        git add .
+        git_tree=$(git write-tree)
+        assert_eq "$git_tree" "$mg_tree" "$context recursive write-tree sha"
+    )
+
+    ls_stage=$(GIT_DIR="$mg_repo/.mg" GIT_WORK_TREE="$mg_repo" git ls-files --stage)
+    if [ -z "$ls_stage" ]; then
+        printf 'oracle mismatch: %s git ls-files --stage returned empty output\n' "$context" >&2
+        exit 1
+    fi
+    (
+        cd "$git_repo"
+        while IFS= read -r -d '' file; do
+            rel=${file#./}
+            blob_sha=$(git hash-object "$rel")
+            expected_stage=$'100644 '"$blob_sha"$' 0\t'"$rel"
             if ! grep -Fqx "$expected_stage" <<<"$ls_stage"; then
                 printf 'oracle mismatch: %s missing stage line\nexpected: %s\nactual:\n%s\n' "$context" "$expected_stage" "$ls_stage" >&2
                 exit 1
             fi
-        done
-
-        pretty=$(GIT_OBJECT_DIRECTORY="$mg_repo/.mg/objects" git -C "$GIT_READER" cat-file -p "$mg_tree")
-        if [ -z "$pretty" ]; then
-            printf 'oracle mismatch: %s git cat-file -p tree returned empty output\n' "$context" >&2
-            exit 1
-        fi
+        done < <(find . \( -path './.mg' -o -path './.mg/*' -o -path './.git' -o -path './.git/*' \) -prune -o -type f -print0 | LC_ALL=C sort -z)
     )
+
+    pretty=$(GIT_OBJECT_DIRECTORY="$mg_repo/.mg/objects" git -C "$GIT_READER" cat-file -p "$mg_tree")
+    if [ -z "$pretty" ]; then
+        printf 'oracle mismatch: %s git cat-file -p tree returned empty output\n' "$context" >&2
+        exit 1
+    fi
 }
 
 FIXED_TREE_SRC="$WORK/fixed-tree-src"
-mkdir -p "$FIXED_TREE_SRC"
+mkdir -p "$FIXED_TREE_SRC/src" "$FIXED_TREE_SRC/docs/guides" "$FIXED_TREE_SRC/spaced dir"
 printf 'alpha\n' > "$FIXED_TREE_SRC/a.txt"
-printf 'beta\n' > "$FIXED_TREE_SRC/b.txt"
-printf 'space name\n' > "$FIXED_TREE_SRC/file with space.txt"
+printf 'beta\n' > "$FIXED_TREE_SRC/src/lib.rs"
+printf 'nested\n' > "$FIXED_TREE_SRC/docs/guides/intro.txt"
+printf 'space name\n' > "$FIXED_TREE_SRC/spaced dir/file with space.txt"
 stage_with_mg_and_compare_tree "$FIXED_TREE_SRC" "fixed-tree"
 
 RANDOM_TREE_SRC="$WORK/random-tree-src"
@@ -155,32 +192,74 @@ import string
 import sys
 
 out = pathlib.Path(sys.argv[1])
-rng = random.Random(0xA3_02_0002)
+rng = random.Random(0xA4_02_0003)
 alphabet = string.ascii_letters + string.digits + "._-"
 seen = set()
 for i in range(1000):
+    depth = rng.randrange(1, 5)
+    dirs = []
+    for level in range(depth - 1):
+        dirs.append("d" + "".join(rng.choice(alphabet) for _ in range(rng.randrange(3, 12))) + f"-{level}")
     while True:
         stem = "f" + "".join(rng.choice(alphabet) for _ in range(rng.randrange(6, 24)))
-        name = f"{stem}-{i:04d}.dat"
-        if name not in seen:
-            seen.add(name)
+        rel = pathlib.Path(*dirs) / f"{stem}-{i:04d}.dat"
+        if rel.as_posix() not in seen:
+            seen.add(rel.as_posix())
             break
+    path = out / rel
+    path.parent.mkdir(parents=True, exist_ok=True)
     size = rng.randrange(0, 2048)
     data = bytes(rng.randrange(0, 256) for _ in range(size))
-    (out / name).write_bytes(data)
+    path.write_bytes(data)
 PY
-stage_with_mg_and_compare_tree "$RANDOM_TREE_SRC" "random-tree-1000"
+stage_with_mg_and_compare_tree "$RANDOM_TREE_SRC" "random-recursive-tree-1000"
 
-UNSUPPORTED_REPO="$WORK/unsupported"
-mkdir -p "$UNSUPPORTED_REPO/subdir"
+COMMIT_REPO="$WORK/commit-repo"
+mkdir -p "$COMMIT_REPO"
 (
-    cd "$UNSUPPORTED_REPO"
+    cd "$COMMIT_REPO"
     "$MG_BIN" init >/dev/null
-    printf 'nested\n' > subdir/nested.txt
-    if "$MG_BIN" add subdir/nested.txt 2>/dev/null; then
-        printf 'oracle mismatch: nested path should fail clearly in M2\n' >&2
-        exit 1
-    fi
+    mkdir -p src docs
+    printf 'hello commit\n' > README.md
+    printf 'fn main() {}\n' > src/main.rs
+    "$MG_BIN" add README.md
+    (cd src && "$MG_BIN" add main.rs)
+    first=$("$MG_BIN" commit -m 'first commit')
+    head=$(GIT_DIR="$COMMIT_REPO/.mg" GIT_WORK_TREE="$COMMIT_REPO" git rev-parse HEAD)
+    assert_eq "$first" "$head" "git rev-parse HEAD reads mg first commit ref"
+    commit_payload=$(GIT_DIR="$COMMIT_REPO/.mg" GIT_WORK_TREE="$COMMIT_REPO" git cat-file -p "$first")
+    assert_contains "$commit_payload" 'tree ' "git cat-file -p first commit tree line"
+    assert_contains "$commit_payload" 'author A U Thor <author@example.com> 1700000000 +0000' "git cat-file -p first author"
+    assert_contains "$commit_payload" 'committer C O Mitter <committer@example.com> 1700000001 +0000' "git cat-file -p first committer"
+    assert_contains "$commit_payload" 'first commit' "git cat-file -p first message"
+    ls_tree=$(GIT_DIR="$COMMIT_REPO/.mg" GIT_WORK_TREE="$COMMIT_REPO" git ls-tree -r --name-only HEAD)
+    assert_contains "$ls_tree" 'README.md' "git ls-tree -r first commit README"
+    assert_contains "$ls_tree" 'src/main.rs' "git ls-tree -r first commit nested file"
+
+    printf 'second\n' > docs/second.txt
+    (cd docs && "$MG_BIN" add second.txt)
+    second=$("$MG_BIN" commit -m 'second commit')
+    head=$(GIT_DIR="$COMMIT_REPO/.mg" GIT_WORK_TREE="$COMMIT_REPO" git rev-parse HEAD)
+    assert_eq "$second" "$head" "git rev-parse HEAD reads mg second commit ref"
+    git_log=$(GIT_DIR="$COMMIT_REPO/.mg" GIT_WORK_TREE="$COMMIT_REPO" git log --format='%H %s')
+    mg_log=$("$MG_BIN" log)
+    assert_eq "$git_log" "$mg_log" "mg log matches git first-parent log"
+    second_payload=$(GIT_DIR="$COMMIT_REPO/.mg" GIT_WORK_TREE="$COMMIT_REPO" git cat-file -p "$second")
+    assert_contains "$second_payload" "parent $first" "git cat-file -p second parent"
 )
 
-printf 'oracle ok: M1 blobs + M2 git-readable index/tree + 1000 randomized flat add/write-tree cases\n'
+COMMIT_TREE_REPO="$WORK/commit-tree-repo"
+mkdir -p "$COMMIT_TREE_REPO"
+(
+    cd "$COMMIT_TREE_REPO"
+    "$MG_BIN" init >/dev/null
+    printf 'plumbing\n' > p.txt
+    "$MG_BIN" add p.txt
+    tree=$("$MG_BIN" write-tree)
+    commit=$("$MG_BIN" commit-tree "$tree" -m 'plumbing commit')
+    payload=$(GIT_OBJECT_DIRECTORY="$COMMIT_TREE_REPO/.mg/objects" git -C "$GIT_READER" cat-file -p "$commit")
+    assert_contains "$payload" "tree $tree" "git cat-file -p commit-tree tree"
+    assert_contains "$payload" 'plumbing commit' "git cat-file -p commit-tree message"
+)
+
+printf 'oracle ok: M1 blobs + M2 recursive index/tree + M3 commits/log + 1000 deterministic randomized regular-file path/content cases\n'

@@ -12,7 +12,7 @@
 
 ## What this is
 
-实现 git 的 **plumbing layer**(底层对象模型 + 索引 + 简化的 push/fetch over HTTP),**不做 porcelain**(不实现 `git status` 这种用户体验命令)。
+实现 git 的 **plumbing layer**(底层对象模型 + 索引 + commit/log repository state)。v0.1.0 同时包含最小 porcelain 子集 `mg init` / `mg add` / `mg commit -m` / `mg log`,但不实现 `git status` / branch / merge / remote 等完整用户体验命令。
 
 跟 cs01 的对比:
 - cs01 = 网络服务 + 前端 + 实时
@@ -91,8 +91,8 @@ mg log
 
 - ✅ M0 scaffold
 - ✅ M1 object model + `hash-object` / `cat-file`: Git-compatible blob identity, zlib loose-object IO, minimal `.mg/objects` init, and real Git oracle with 1000 randomized blobs
-- ✅ M2 index + `add` / `write-tree`: Git index v2 + canonical flat-file tree compatibility per ADR-0003; nested paths and non-regular files fail clearly until a later wave
-- ⬜ M3 commit + log + repo discovery
+- ✅ M2 index + `add` / `write-tree`: Git index v2 + canonical tree compatibility per ADR-0003
+- ✅ M3 commit + log + repo discovery: upward `.mg` discovery, recursive regular-file add/write-tree, Git-compatible `commit-tree`, `commit -m`, and first-parent `log` per ADR-0004
 - ⬜ M4 v0.1.0 release + METHODOLOGY-STATUS
 
 ## License
