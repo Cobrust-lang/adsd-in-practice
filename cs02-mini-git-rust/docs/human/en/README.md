@@ -18,6 +18,45 @@ mg commit -m "first"
 mg log
 ```
 
+## Build and verify
+
+### Bootstrap the toolchain
+
+```bash
+cd cs02-mini-git-rust
+bash scripts/bootstrap.sh
+```
+
+### Install the CLI locally
+
+```bash
+cargo install --path crates/mg-cli
+mg --help
+```
+
+### Run the full verification flow
+
+```bash
+bash ../_shared/doc-coverage.sh
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --workspace --locked
+bash tests/oracle.sh
+```
+
+This verifies docs sync, Rust gates, and the real Git oracle including the M4 hardening negative cases.
+
+### Manual smoke flow
+
+```bash
+mkdir -p /tmp/cs02-demo && cd /tmp/cs02-demo
+mg init
+echo "hello" > a.txt
+mg add a.txt
+mg commit -m "first"
+mg log
+```
+
 ## Supported commands (M4 hardened v0.1 subset)
 
 **Plumbing**: `hash-object` / `cat-file` / `write-tree` / `commit-tree`

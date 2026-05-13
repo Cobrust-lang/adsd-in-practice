@@ -18,6 +18,45 @@ mg commit -m "first"
 mg log
 ```
 
+## 构建与验证流程
+
+### 初始化工具链
+
+```bash
+cd cs02-mini-git-rust
+bash scripts/bootstrap.sh
+```
+
+### 本地安装 CLI
+
+```bash
+cargo install --path crates/mg-cli
+mg --help
+```
+
+### 跑完整验证流程
+
+```bash
+bash ../_shared/doc-coverage.sh
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --workspace --locked
+bash tests/oracle.sh
+```
+
+这组命令会同时验证文档同步、Rust gates,以及包含 M4 hardening 负例的 real Git oracle。
+
+### 手动 smoke 流程
+
+```bash
+mkdir -p /tmp/cs02-demo && cd /tmp/cs02-demo
+mg init
+echo "hello" > a.txt
+mg add a.txt
+mg commit -m "first"
+mg log
+```
+
 ## 支持的命令(M4 hardened v0.1 子集)
 
 **Plumbing**:`hash-object` / `cat-file` / `write-tree` / `commit-tree`

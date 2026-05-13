@@ -68,6 +68,52 @@ mg commit -m "first"
 mg log
 ```
 
+## Build and verify
+
+### Bootstrap the toolchain
+
+```bash
+cd cs02-mini-git-rust
+bash scripts/bootstrap.sh
+```
+
+The bootstrap checks `cargo` and `git`, fetches dependencies, builds the workspace, and runs a smoke test pass.
+
+### Install the CLI locally
+
+```bash
+cargo install --path crates/mg-cli
+mg --help
+```
+
+### Run the full release-verification flow
+
+```bash
+bash ../_shared/doc-coverage.sh
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --workspace --locked
+bash tests/oracle.sh
+```
+
+What each step proves:
+
+- `doc-coverage.sh`: ADR/finding zh-en-agent sync is intact.
+- `cargo fmt` / `cargo clippy`: Rust style and lint discipline stay clean.
+- `cargo test`: unit/integration behavior stays green.
+- `tests/oracle.sh`: real Git can read the supported subset we write, and M4 hardening negative cases reject unsafe paths and malformed local state.
+
+### Manual smoke flow
+
+```bash
+mkdir -p /tmp/cs02-demo && cd /tmp/cs02-demo
+mg init
+echo "hello" > a.txt
+mg add a.txt
+mg commit -m "first"
+mg log
+```
+
 ## Architecture
 
 ```
