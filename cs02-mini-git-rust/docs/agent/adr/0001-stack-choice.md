@@ -5,7 +5,7 @@ status: accepted
 date: 2026-05-12
 case: cs02-mini-git-rust
 supersedes: none
-last_verified_commit: pending
+last_verified_commit: cd352e6eefdc6cd0af461523e022e11b341c0484
 ---
 
 # ADR-0001: Stack choice — pure-Rust crypto + flate2 + clap
@@ -74,9 +74,9 @@ CS-02 是 git plumbing 实现。必须做选择:
 
 ## Done Criteria
 
-- [ ] Cargo.toml workspace 声明 sha1/sha2/flate2/clap/anyhow/thiserror
-- [ ] `mg-core::hash::sha1_hex(b"")` 只验证原始 SHA-1;Git 对象 SHA 必须通过 `mg-core::object::hash(Kind::Blob, payload)` 验证
-- [ ] `mg hash-object hello.txt`(M1.1 后)跟 `git hash-object hello.txt` 输出一致
+- [x] Cargo.toml workspace 声明 sha1/sha2/flate2/clap/anyhow/thiserror
+- [x] `mg-core::hash::sha1_hex(b"")` 只验证原始 SHA-1;Git 对象 SHA 必须通过 `mg-core::object::hash(Kind::Blob, payload)` 验证
+- [x] `mg hash-object hello.txt`(M1.1 后)跟 `git hash-object hello.txt` 输出一致
 
 ## Cross-references
 
@@ -85,4 +85,4 @@ CS-02 是 git plumbing 实现。必须做选择:
 
 ## Notes
 
-如果 v0.2 加 SHA-256 默认,frontmatter `last_verified_commit` 必须更新;hash.rs 的 trait 抽象现在已经预留好,只需要一个 `enum HashAlgo`。
+如果 v0.2 加 SHA-256 默认,frontmatter `last_verified_commit` 必须更新;当前实现仍以 SHA-1 为唯一 public path,后续升级需要显式设计 hash abstraction 而不是假设它已存在。

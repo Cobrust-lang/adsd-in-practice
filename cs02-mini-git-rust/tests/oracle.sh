@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# CS-02 oracle: compare mg object/index/tree/commit behavior with real git.
+# CS-02 oracle: compare mg v0.1 subset behavior with real git, including M4 hardening negatives.
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 MG_BIN="$ROOT/target/debug/mg"
-WORK="$ROOT/target/oracle-m3"
+WORK="$ROOT/target/oracle-m4"
 
 export GIT_AUTHOR_NAME='A U Thor'
 export GIT_AUTHOR_EMAIL='author@example.com'
@@ -33,6 +33,24 @@ assert_contains() {
     local context="$3"
     if [[ "$haystack" != *"$needle"* ]]; then
         printf 'oracle mismatch: %s\nmissing: %s\nactual:\n%s\n' "$context" "$needle" "$haystack" >&2
+        exit 1
+    fi
+}
+
+assert_fails_with() {
+    local expected="$1"
+    shift
+    set +e
+    local output
+    output=$("$@" 2>&1)
+    local status=$?
+    set -e
+    if [ "$status" -eq 0 ]; then
+        printf 'oracle mismatch: expected failure containing %s but command succeeded: %s\n' "$expected" "$*" >&2
+        exit 1
+    fi
+    if [[ "$output" != *"$expected"* ]]; then
+        printf 'oracle mismatch: expected failure containing %s\nactual output:\n%s\n' "$expected" "$output" >&2
         exit 1
     fi
 }
@@ -262,4 +280,95 @@ mkdir -p "$COMMIT_TREE_REPO"
     assert_contains "$payload" 'plumbing commit' "git cat-file -p commit-tree message"
 )
 
-printf 'oracle ok: M1 blobs + M2 recursive index/tree + M3 commits/log + 1000 deterministic randomized regular-file path/content cases\n'
+NEGATIVE_REPO="$WORK/negative-repo"
+mkdir -p "$NEGATIVE_REPO"
+(
+    cd "$NEGATIVE_REPO"
+    "$MG_BIN" init >/dev/null
+    printf 'ok\n' > ok.txt
+    "$MG_BIN" add ok.txt
+
+    assert_fails_with 'refusing to stage repository-internal path' "$MG_BIN" add .mg/HEAD
+
+    mkdir -p nested/.git
+    printf 'sentinel\n' > nested/.git/secret
+    assert_fails_with 'refusing to stage repository-internal path' "$MG_BIN" add nested/.git/secret
+
+    sha=$("$MG_BIN" hash-object ok.txt)
+    upper_sha=$(printf '%s' "$sha" | tr '[:lower:]' '[:upper:]')
+    assert_fails_with 'lowercase 40-character SHA-1 hex object ID' "$MG_BIN" cat-file -p "$upper_sha"
+
+    rm .mg/index
+    ln -s ok.txt .mg/index
+    assert_fails_with 'refusing to overwrite symlink target' "$MG_BIN" add ok.txt
+    rm .mg/index
+    "$MG_BIN" add ok.txt
+
+    ln -s ok.txt symlink.txt
+    assert_fails_with 'does not support symlink inputs' "$MG_BIN" add symlink.txt
+    rm symlink.txt
+
+    rm -f .mg/index.lock .mg/index
+    ln -s ok.txt .mg/index
+    assert_fails_with 'refusing to overwrite symlink target' "$MG_BIN" add ok.txt
+    [ ! -e .mg/index.lock ] || { printf 'oracle mismatch: stale .mg/index.lock should be cleaned after write failure\n' >&2; exit 1; }
+    rm .mg/index
+    "$MG_BIN" add ok.txt
+
+    touch .mg/index.lock
+    assert_fails_with 'File exists' "$MG_BIN" add ok.txt
+    rm .mg/index.lock
+
+    rm -f .mg/refs/heads/main
+    ln -s ../../ok.txt .mg/refs/heads/main
+    assert_fails_with 'refusing to overwrite symlink target' "$MG_BIN" commit -m 'blocked by ref symlink'
+    rm .mg/refs/heads/main
+
+    rm -rf .mg/refs
+    mkdir -p .mg/redirect-parent
+    ln -s ../redirect-parent .mg/refs
+    assert_fails_with 'refusing to traverse symlink ancestor' "$MG_BIN" commit -m 'blocked by ref ancestor symlink'
+    rm .mg/refs
+    mkdir -p .mg/refs/heads
+
+    printf 'another\n' > another.txt
+    another_sha=$("$MG_BIN" hash-object another.txt)
+    another_prefix=${another_sha:0:2}
+    rm -rf ".mg/objects/$another_prefix" .mg/redirect-objects
+    mkdir -p .mg/redirect-objects
+    ln -s ../redirect-objects ".mg/objects/$another_prefix"
+    assert_fails_with 'refusing to traverse symlink ancestor' "$MG_BIN" hash-object -w another.txt
+    rm ".mg/objects/$another_prefix"
+
+    huge_sha=$(python3 - <<'PY'
+import hashlib
+import pathlib
+import zlib
+
+mg = pathlib.Path('.mg')
+objects = mg / 'objects'
+payload = b'a' * (16 * 1024 * 1024 + 1)
+raw = b'blob ' + str(len(payload)).encode() + b'\0' + payload
+sha = hashlib.sha1(raw).hexdigest()
+path = objects / sha[:2]
+path.mkdir(parents=True, exist_ok=True)
+(path / sha[2:]).write_bytes(zlib.compress(raw))
+print(sha)
+PY
+)
+    assert_fails_with 'decoded size cap' "$MG_BIN" cat-file -p "$huge_sha"
+
+    python3 - <<'PY'
+import hashlib
+import pathlib
+import struct
+
+entry_count = 1_000_000
+header = b'DIRC' + struct.pack('>II', 2, entry_count)
+checksum = hashlib.sha1(header).digest()
+(pathlib.Path('.mg') / 'index').write_bytes(header + checksum)
+PY
+    assert_fails_with 'entry count exceeds file length lower bound' "$MG_BIN" write-tree
+)
+
+printf 'oracle ok: M1 blobs + M2 recursive index/tree + M3 commits/log + M4 hardening negatives + 1000 deterministic randomized regular-file path/content cases\n'

@@ -17,8 +17,10 @@ const SHA1_LEN: usize = 20;
 const ENTRY_FIXED_LEN: usize = 62;
 const FLAG_NAME_LEN_MASK: u16 = 0x0fff;
 const FLAG_STAGE_MASK: u16 = 0x3000;
+const FLAG_SUPPORTED_MASK: u16 = FLAG_NAME_LEN_MASK | FLAG_STAGE_MASK;
 const REGULAR_MODE_644: u32 = 0o100_644;
 const REGULAR_MODE_755: u32 = 0o100_755;
+const MAX_INDEX_ENTRIES: usize = 1_000_000;
 
 /// A stage-0 regular-file entry from a Git index v2 file.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -89,10 +91,15 @@ pub fn read(path: &Path) -> Result<Vec<Entry>> {
 /// Write a Git index v2 file with entries sorted by Git path order.
 pub fn write(path: &Path, entries: &[Entry]) -> Result<()> {
     let bytes = write_bytes(entries)?;
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
+    let lock_path = index_lock_path(path)?;
+    let lock_file = crate::acquire_lock(&lock_path)?;
+    let write_result = crate::atomic_write(path, &bytes);
+    drop(lock_file);
+    let cleanup_result = fs::remove_file(&lock_path);
+    if let Err(err) = cleanup_result {
+        return Err(Error::Io(err));
     }
-    fs::write(path, bytes)?;
+    write_result?;
     Ok(())
 }
 
@@ -162,6 +169,19 @@ pub fn read_bytes(bytes: &[u8]) -> Result<Vec<Entry>> {
         )));
     }
     let entry_count = read_u32(bytes, 8)? as usize;
+    if entry_count > MAX_INDEX_ENTRIES {
+        return Err(Error::InvalidIndex(format!(
+            "index entry count exceeds v0.1 cap: {entry_count} > {MAX_INDEX_ENTRIES}"
+        )));
+    }
+    let minimum_record_bytes = entry_count
+        .checked_mul(ENTRY_FIXED_LEN + 1)
+        .ok_or_else(|| Error::InvalidIndex("index entry count overflows size bounds".to_owned()))?;
+    if 12 + minimum_record_bytes > checksum_start {
+        return Err(Error::InvalidIndex(
+            "index entry count exceeds file length lower bound".to_owned(),
+        ));
+    }
     let mut offset = 12usize;
     let mut entries = Vec::with_capacity(entry_count);
 
@@ -253,6 +273,11 @@ fn validate_regular_mode(mode: u32) -> Result<()> {
 }
 
 fn validate_stage0_flags(flags: u16) -> Result<usize> {
+    if flags & !FLAG_SUPPORTED_MASK != 0 {
+        return Err(Error::InvalidIndex(
+            "unsupported index flags for v0.1 parser".to_owned(),
+        ));
+    }
     if flags & FLAG_STAGE_MASK != 0 {
         return Err(Error::InvalidIndex(
             "M3 supports only stage-0 index entries".to_owned(),
@@ -406,6 +431,7 @@ fn read_u16(bytes: &[u8], offset: usize) -> Result<u16> {
 }
 
 fn decode_sha1_hex(sha: &str) -> Result<[u8; SHA1_LEN]> {
+    crate::object::validate_sha1_hex(sha)?;
     let bytes = hex::decode(sha).map_err(|_| {
         Error::InvalidObject("expected a lowercase 40-character SHA-1 hex object ID".to_owned())
     })?;
@@ -440,6 +466,14 @@ fn path_bytes(path: &Path) -> Vec<u8> {
         .replace('\\', "/")
         .as_bytes()
         .to_vec()
+}
+
+fn index_lock_path(path: &Path) -> Result<PathBuf> {
+    let file_name = path
+        .file_name()
+        .ok_or_else(|| Error::InvalidIndex("index path has no filename".to_owned()))?
+        .to_string_lossy();
+    Ok(path.with_file_name(format!("{file_name}.lock")))
 }
 
 #[cfg(unix)]
@@ -608,5 +642,22 @@ mod tests {
         assert!(validate_relative_path(Path::new("src/lib.rs")).is_ok());
         assert!(validate_relative_path(Path::new("../lib.rs")).is_err());
         assert!(validate_relative_path(Path::new("./lib.rs")).is_err());
+    }
+
+    #[test]
+    fn index_rejects_entry_count_above_cap_before_allocation() {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(SIGNATURE);
+        push_u32(&mut bytes, VERSION);
+        push_u32(
+            &mut bytes,
+            u32::try_from(MAX_INDEX_ENTRIES + 1).expect("test cap should fit in u32"),
+        );
+        let checksum = Sha1::digest(&bytes);
+        bytes.extend_from_slice(&checksum);
+        assert!(matches!(
+            read_bytes(&bytes),
+            Err(Error::InvalidIndex(message)) if message.contains("exceeds v0.1 cap")
+        ));
     }
 }

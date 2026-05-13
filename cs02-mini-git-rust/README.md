@@ -12,7 +12,7 @@
 
 ## What this is
 
-实现 git 的 **plumbing layer**(底层对象模型 + 索引 + commit/log repository state)。v0.1.0 同时包含最小 porcelain 子集 `mg init` / `mg add` / `mg commit -m` / `mg log`,但不实现 `git status` / branch / merge / remote 等完整用户体验命令。
+实现 git 的 **plumbing layer**(底层对象模型 + 索引 + commit/log repository state)。v0.1.0 同时包含最小 porcelain 子集 `mg init` / `mg add` / `mg commit -m` / `mg log`,但不实现 `git status` / branch / merge / remote 等完整用户体验命令。发布承诺是 **Git-compatible v0.1 子集**,不是 `.mg/` 与 `.git/` 的完整双向可替换实现。
 
 跟 cs01 的对比:
 - cs01 = 网络服务 + 前端 + 实时
@@ -28,8 +28,8 @@
 - ✅ Object store:`.mg/objects/aa/bb...` loose objects(不实现 packfile 的 v0.1)
 - ✅ Index(staging area):`.mg/index` 文件格式
 - ✅ `mg hash-object` / `mg cat-file` / `mg write-tree` / `mg commit-tree`(plumbing 命令)
-- ✅ `mg init` / `mg add <path>` / `mg commit -m <msg>` / `mg log`(porcelain 子集,核心 7 命令)
-- ✅ 与真 `git` 互通:**我们的 `.mg/` 跟 `.git/` 完全兼容**(对照 oracle)
+- ✅ `mg init` / `mg add <path>` / `mg commit -m <msg>` / `mg log`(porcelain 子集,共 8 个已实现命令)
+- ✅ 与真 `git` 的 v0.1 子集兼容:支持 loose object / index / tree / commit / first-parent log,并由真实 Git oracle 验证
 - ✅ 5 道 ADSD gate green
 
 ### Out of scope
@@ -43,11 +43,10 @@
 
 | 决策点 | 预期 ADR |
 |---|---|
-| 对象哈希算法(SHA-1 vs SHA-256 兼容)| ADR-0002 |
-| Loose object 压缩(zlib vs zstd)| ADR-0003 |
-| Index 文件格式(自陈格式 vs `git-format-index` 严格兼容)| ADR-0004 |
-| Worktree → index → HEAD 状态机的实现 | ADR-0005 |
-| Repository discovery(从 cwd 向上找 `.mg/`)| ADR-0006 |
+| 对象哈希算法(SHA-1 vs SHA-256 兼容) | ADR-0002 |
+| Index 文件格式(严格兼容 `git-format-index`) | ADR-0003 |
+| Repository state / commit / log / discovery | ADR-0004 |
+| M4 release hardening 与文档诚实 | ADR-0005 |
 
 **预期会撞**:
 - **F23-A** oracle authorship(自己写自己测,必须对照真 `git` 二进制)
@@ -93,7 +92,8 @@ mg log
 - ✅ M1 object model + `hash-object` / `cat-file`: Git-compatible blob identity, zlib loose-object IO, minimal `.mg/objects` init, and real Git oracle with 1000 randomized blobs
 - ✅ M2 index + `add` / `write-tree`: Git index v2 + canonical tree compatibility per ADR-0003
 - ✅ M3 commit + log + repo discovery: upward `.mg` discovery, recursive regular-file add/write-tree, Git-compatible `commit-tree`, `commit -m`, and first-parent `log` per ADR-0004
-- ⬜ M4 v0.1.0 release + METHODOLOGY-STATUS
+- ✅ M4 release hardening: ADR-0005 hardening landed with atomic repository-owned writes, index lock cleanup, allocation caps, symlink-path rejection, and expanded oracle negatives for the Git-compatible v0.1 subset
+- ✅ METHODOLOGY-STATUS: cs02 methodology conclusions are recorded at repo top level
 
 ## License
 

@@ -14,6 +14,8 @@ use flate2::write::ZlibEncoder;
 
 use crate::{Error, Result};
 
+const MAX_LOOSE_OBJECT_BYTES: usize = 16 * 1024 * 1024;
+
 /// Object kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
@@ -116,6 +118,7 @@ pub fn write_loose(kind: Kind, payload: &[u8], mg_dir: &Path) -> Result<String> 
     let parent = path
         .parent()
         .ok_or_else(|| Error::InvalidObject("loose object path has no parent".to_owned()))?;
+    crate::reject_symlink_ancestors(parent)?;
     fs::create_dir_all(parent)?;
 
     if path.exists() {
@@ -125,7 +128,7 @@ pub fn write_loose(kind: Kind, payload: &[u8], mg_dir: &Path) -> Result<String> 
     let mut zlib_writer = ZlibEncoder::new(Vec::new(), Compression::default());
     zlib_writer.write_all(&object_bytes)?;
     let compressed = zlib_writer.finish()?;
-    fs::write(path, compressed)?;
+    crate::atomic_write(&path, &compressed)?;
     Ok(sha)
 }
 
@@ -136,7 +139,19 @@ pub fn read_loose(mg_dir: &Path, sha: &str) -> Result<DecodedObject> {
     let file = File::open(path)?;
     let mut decoder = ZlibDecoder::new(file);
     let mut encoded = Vec::new();
-    decoder.read_to_end(&mut encoded)?;
+    let mut chunk = [0_u8; 8192];
+    loop {
+        let read = decoder.read(&mut chunk)?;
+        if read == 0 {
+            break;
+        }
+        if encoded.len().saturating_add(read) > MAX_LOOSE_OBJECT_BYTES {
+            return Err(Error::InvalidObject(format!(
+                "loose object exceeds decoded size cap of {MAX_LOOSE_OBJECT_BYTES} bytes"
+            )));
+        }
+        encoded.extend_from_slice(&chunk[..read]);
+    }
 
     let actual = crate::hash::sha1_hex(&encoded);
     if actual != sha {
@@ -268,9 +283,13 @@ pub fn commit_subject(payload: &[u8]) -> Result<String> {
 
 /// Validate a 40-character SHA-1 hex object ID.
 pub fn validate_sha1_hex(sha: &str) -> Result<()> {
-    if sha.len() != 40 || !sha.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+    if sha.len() != 40
+        || !sha
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
         return Err(Error::InvalidObject(
-            "expected a 40-character SHA-1 hex object ID".to_owned(),
+            "expected a lowercase 40-character SHA-1 hex object ID".to_owned(),
         ));
     }
     Ok(())
@@ -403,6 +422,7 @@ mod tests {
         let tmp = std::env::temp_dir().join(format!("mg-core-test-{}", std::process::id()));
         let _ = fs::remove_dir_all(&tmp);
         fs::create_dir_all(tmp.join("objects")).expect("test temp object dir should be created");
+        let tmp = fs::canonicalize(&tmp).expect("test temp object dir should canonicalize");
         let sha = write_loose(Kind::Blob, b"hello", &tmp).expect("loose write should succeed");
         assert_eq!(sha, "b6fc4c620b67d95f953a5c1c1230aaab5db5a1b0");
         assert!(loose_path(&tmp, &sha).is_file());

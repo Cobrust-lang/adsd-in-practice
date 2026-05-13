@@ -5,7 +5,7 @@ status: accepted
 date: 2026-05-13
 case: cs02-mini-git-rust
 supersedes: none
-last_verified_commit: pending
+last_verified_commit: cd352e6eefdc6cd0af461523e022e11b341c0484
 ---
 
 # ADR-0004: Repository state, commits, and first-parent log
@@ -94,7 +94,7 @@ M3 owns the repository state boundary:
 
 ## Done Criteria
 
-- [ ] ADR-0003 is stamped with the M2 merge SHA and all M2 done criteria checked.
+- [x] ADR-0003 is stamped with the M2 merge SHA and all M2 done criteria checked.
 - [x] `mg-core::repo` discovers `.mg` upward from cwd and exposes worktree root / git dir paths.
 - [x] `mg init` creates `.mg/objects`, `.mg/refs/heads`, `.mg/HEAD`, and `.mg/config` through library code.
 - [x] `mg add <path>` works from repository root and subdirectories for regular files, storing slash-separated paths in index v2.

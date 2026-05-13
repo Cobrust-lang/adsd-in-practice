@@ -6,7 +6,7 @@
 
 | File | Severity | Status | Related ADR | F-pattern | Date |
 |---|---|---|---|---|---|
-| (尚无 finding) | | | | | |
+| [m4-pre-release-filesystem-hardening](m4-pre-release-filesystem-hardening.md) | High | accepted | ADR-0005 | filesystem hardening / docs honesty | 2026-05-13 |
 
 ## 预期会撞的 finding 模板
 

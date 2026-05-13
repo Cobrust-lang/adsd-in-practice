@@ -62,8 +62,8 @@ impl Repository {
         let git_dir = worktree_root.join(".mg");
         fs::create_dir_all(git_dir.join("objects"))?;
         fs::create_dir_all(git_dir.join("refs").join("heads"))?;
-        fs::write(git_dir.join("HEAD"), HEAD_MAIN.as_bytes())?;
-        fs::write(git_dir.join("config"), CONFIG)?;
+        crate::atomic_write(&git_dir.join("HEAD"), HEAD_MAIN.as_bytes())?;
+        crate::atomic_write(&git_dir.join("config"), CONFIG)?;
         Ok(Self {
             worktree_root,
             git_dir,
@@ -95,6 +95,13 @@ impl Repository {
         } else {
             cwd.join(input)
         };
+        let metadata = fs::symlink_metadata(&base)?;
+        if metadata.file_type().is_symlink() {
+            return Err(Error::InvalidRepo(format!(
+                "mg add does not support symlink inputs: {}",
+                input.display()
+            )));
+        }
         let absolute = fs::canonicalize(&base)?;
         let relative = absolute
             .strip_prefix(&self.worktree_root)
@@ -125,7 +132,7 @@ impl Repository {
 
     /// Reset HEAD to the v0.1.0 default symbolic branch.
     pub fn write_head_main(&self) -> Result<()> {
-        fs::write(self.git_dir.join("HEAD"), HEAD_MAIN.as_bytes())?;
+        crate::atomic_write(&self.git_dir.join("HEAD"), HEAD_MAIN.as_bytes())?;
         Ok(())
     }
 
@@ -163,10 +170,7 @@ impl Repository {
         validate_ref_path(ref_path)?;
         crate::object::validate_sha1_hex(sha)?;
         let path = self.git_dir.join(ref_path);
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        fs::write(path, format!("{sha}\n"))?;
+        crate::atomic_write(&path, format!("{sha}\n").as_bytes())?;
         Ok(())
     }
 }
@@ -195,10 +199,33 @@ fn validate_ref_path(path: &Path) -> Result<()> {
 }
 
 fn validate_index_path(path: &Path) -> Result<()> {
+    reject_internal_repo_path(path)?;
     crate::index::validate_relative_path(path).map_err(|err| match err {
         Error::InvalidIndex(message) => Error::InvalidRepo(message),
         other => other,
     })
+}
+
+fn reject_internal_repo_path(path: &Path) -> Result<()> {
+    if path.as_os_str().is_empty() {
+        return Err(Error::InvalidRepo("repository path is empty".to_owned()));
+    }
+    for component in path.components() {
+        let std::path::Component::Normal(part) = component else {
+            return Err(Error::InvalidRepo(format!(
+                "path must stay within repository worktree: {}",
+                path.display()
+            )));
+        };
+        let part = part.to_string_lossy();
+        if matches!(part.as_ref(), ".mg" | ".git") {
+            return Err(Error::InvalidRepo(format!(
+                "refusing to stage repository-internal path: {}",
+                path.display()
+            )));
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
