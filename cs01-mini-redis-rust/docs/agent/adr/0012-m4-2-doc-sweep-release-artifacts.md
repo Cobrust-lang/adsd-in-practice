@@ -114,11 +114,11 @@ For README §1 (cs01) — 新开头:
 - [x] `METHODOLOGY-STATUS.md` cs01 section ≥ 200 字,列实际 ADR/finding 计数 + persona scores + F-pattern 候选
 
 ### README sediment (Bucket B)
-- [x] README §Status:M1 ✅ / M2 ✅ / M3 ✅ / M4.1 ✅ / M4.2 ✅ / M4.3/M4.4 ✅ Tauri `.app` bundle gate,with DMG/signing/notarization explicitly out-of-gate future release-engineering work + 各 link 对应 ADR
+- [x] README §Status:M1 ✅ / M2 ✅ / M3 ✅ / M4.1 ✅ / M4.2 ✅; M4.4 later withdrew the wrong-session Tauri scope and restored browser-dashboard release surface
 - [x] README §"Pub/Sub 页是 stub" 段删除,改 §"Pub/Sub 页是 read-only dashboard (M3.1)" + read-only banner doc
 - [x] README §Quick-start 第一命令 `cargo run -p redis-server -- --port 6380`(无 --aof)
 - [x] README §"Persistence (M3.2)" 子节单独说 `--aof` + 需 `mkdir -p data/`
-- [x] README §Architecture diagram 加 "M4.3 target" 注 rust-embed line
+- [x] README §Architecture diagram shows Rust server + SvelteKit browser UI; M4.4 later removed wrong-session Tauri target
 - [x] README §"Supported commands" subsection,列 18+ 命令 + 显式 "Not implemented" list
 - [x] README §"Prerequisites" 子节
 - [x] README §"Docs" 子节(zh / en / agent links)
@@ -134,7 +134,7 @@ For README §1 (cs01) — 新开头:
 - [x] `docs/human/en/finding-m1-1-p9-missed-shared-doc-coverage.md` 存在
 - [x] `docs/human/{zh,en}/finding-m3-1-lagging-subscriber-disconnect.md` 各存在
 - [x] `docs/human/{zh,en}/finding-m3-2-aof-replay-corruption-handling.md` 各存在
-- [x] `docs/human/zh/README.md` + `docs/human/en/README.md` 更新到 M4.3 状态;列 ADR 0001-0013
+- [x] `docs/human/zh/README.md` + `docs/human/en/README.md` 更新到 M4.2/M4.4 scope-corrected 状态;列 ADR 0001-0012
 
 ### doc-coverage.sh
 - [x] `_shared/doc-coverage.sh` 新增一段循环 `docs/agent/findings/*.md`,对每个 finding name 检查 `docs/human/{zh,en}/` 至少有一个 .md 提及

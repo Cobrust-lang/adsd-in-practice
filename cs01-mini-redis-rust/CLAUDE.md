@@ -61,14 +61,14 @@ done
 **Wave M4**(release):
 10. ✅ M4.1 critical fixes shipped @ d02aa55(ADR-0011)
 11. ✅ M4.2 release artifacts + doc sweep(ADR-0012)
-12. ✅ M4.3 Tauri desktop frontend source + managed `redis-server` sidecar lightweight gate(ADR-0013);full bundle/signing verification 仍是 release-readiness work;rust-embed 不再是 v0.1.0 primary blocker
+12. ✅ M4.4 scope correction:撤回 wrong-session Tauri desktop packaging requirement;release surface 恢复为 Rust server + SvelteKit browser dashboard
 
 ## 4. 引用结构
 
 - `redis-protocol` crate:**纯函数**,RESP encode/decode。无 IO。
 - `redis-storage` crate:存储 + AOF + expiry。无网络。
 - `redis-server` crate:Axum + tokio + RESP TCP listener。依赖前两者。
-- `web/` 是 SvelteKit project;M4.3 起 primary frontend surface 转为 Tauri desktop app + managed `redis-server` sidecar(ADR-0013)。rust-embed 不再是 v0.1.0 blocker。
+- `web/` 是 SvelteKit browser dashboard project;Tauri desktop/sidecar packaging 不属于本 case release surface。
 
 依赖单向:`server → storage` / `server → protocol` / **`storage → protocol`(仅为 AOF wire compatibility,ADR-0010 论证)**。**`protocol → storage` 反向禁止**;**`server → server` 不允许**(避免循环)。
 

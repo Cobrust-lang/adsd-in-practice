@@ -109,7 +109,7 @@ Each agent had 30-60 min budget, structured `[*-AUDIT-COMPLETION]` report format
 
 ## Current status (M4.4 release checklist reconciliation)
 
-`partial-closed`: M4.1 closed the critical security / AOF / parser / dispatch / Pub/Sub items; M4.2 closed the release-doc/artifact and bilingual-ledger blockers; M4.3 moved the release surface to Tauri source + managed sidecar lightweight gate. This aggregate finding remains historically intact, but its original "fix in progress" language is no longer the live status. The remaining release-readiness risk is not this aggregate backlog; it is tracked separately by `m4-3-tauri-sidecar-packaging-blocker.md` and the M4.4 full-bundle/signing/sidecar-staging work.
+`partial-closed`: M4.1 closed the critical security / AOF / parser / dispatch / Pub/Sub items, and M4.2 closed the release-doc/artifact and bilingual-ledger blockers. M4.3/M4.4 Tauri follow-up was later identified as wrong-session scope contamination and withdrawn by `m4-4-cross-session-tauri-contamination.md`; it is not live cs01 release debt.
 
 ## Conclusion
 
@@ -125,7 +125,7 @@ Each agent had 30-60 min budget, structured `[*-AUDIT-COMPLETION]` report format
 
 ## Fix / Mitigation
 
-M4 remediation has now been split across ADR-0011 (M4.1 critical fixes), ADR-0012 (M4.2 doc sweep + release artifacts), and ADR-0013 (M4.3 Tauri release surface). The original proposed split is preserved below as historical audit-to-backlog evidence; items that later became true are not deleted from the raw finding.
+M4 remediation was split across ADR-0011 (M4.1 critical fixes) and ADR-0012 (M4.2 doc sweep + release artifacts). The later ADR-0013/Tauri path is withdrawn by M4.4 scope correction. The original proposed split is preserved below as historical audit-to-backlog evidence; items that later became true are not deleted from the raw finding.
 
 提议 M4 拆 ADR-0011 (M4.1 critical fixes) + ADR-0012 (M4.2 doc sweep + release artifacts) 两个 wave:
 

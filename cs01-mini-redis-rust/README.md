@@ -2,7 +2,7 @@
 
 # CS-01 · mini-redis-rust
 
-**Redis-compatible in-memory KV + monitoring dashboard · Rust implementation**
+**Redis-compatible in-memory KV + browser monitoring dashboard · Rust implementation**
 
 *ADSD case study #1 — network service + protocol parsing + persistence + live monitoring*
 
@@ -12,15 +12,15 @@
 
 ## Why this exists
 
-This is a Redis-compatible subset built from zero with ADSD multi-agent methodology, deliberately far from Cobrust's compiler domain, to test whether the methodology still works for network services, persistence, and a frontend release surface.
+This is a Redis-compatible subset built from zero with ADSD multi-agent methodology, deliberately far from Cobrust's compiler domain, to test whether the methodology still works for network services, persistence, and a frontend surface.
 
 The product goal is a small, inspectable Redis-like server that works with `redis-cli` for the supported subset. The research goal is the evidence trail: ADRs, findings, bilingual docs, and pre-release multi-agent audits that show where ADSD works or breaks.
 
 ## What this is
 
-CS-01 implements a real RESP TCP server, command router, in-memory storage, TTL handling, AOF persistence, Pub/Sub, Axum HTTP/SSE control plane, and SvelteKit monitoring UI.
+CS-01 implements a real RESP TCP server, command router, in-memory storage, TTL handling, AOF persistence, Pub/Sub, Axum HTTP/SSE control plane, and SvelteKit browser monitoring UI.
 
-It is not production Redis. It is a tag-ready case study for `0.1.0`; DMG creation, signing, and notarization remain separate future release-engineering work.
+It is not production Redis. It is a case-study `0.1.0` line for the supported Redis subset; desktop packaging, installers, signing, and notarization are not part of this case's release surface.
 
 ## Prerequisites
 
@@ -54,7 +54,7 @@ AOF is a simplified append-only mode with no rewrite/compaction in `0.1.0`.
 
 ## Dev mode and UI
 
-M2.2 shipped the SvelteKit frontend under `web/` with Dashboard, Keys, and Pub/Sub pages. ADR-0013 changes the primary M4.3 release target to a Tauri desktop app that manages a `redis-server` sidecar. Browser dev mode remains supported for development.
+M2.2 shipped the SvelteKit browser frontend under `web/` with Dashboard, Keys, and Pub/Sub pages.
 
 ```bash
 # Terminal 1 — backend (RESP :6380 + HTTP/SSE :6381)
@@ -105,48 +105,11 @@ Not implemented in `0.1.0`:
 - **AOF replay corruption handling**: accepted M3.2 behavior is warn-and-continue / stop-at-first-corrupt-tail rather than a full `redis-check-aof` repair workflow. See [`m3-2-aof-replay-corruption-handling`](docs/agent/findings/m3-2-aof-replay-corruption-handling.md).
 - Unsupported Redis features are out of scope rather than partially simulated; this is intentional F24 defense.
 
-## Tauri desktop mode (M4.3)
-
-ADR-0013 的 v0.1.0 release surface 是 `web/src-tauri/` 下的 Tauri v2 desktop shell。它复用同一份 SvelteKit/Vite UI,并尝试管理本地 `redis-server` sidecar:
-
-- RESP 端口固定为 `127.0.0.1:6380`。
-- HTTP/SSE control plane 固定为 `127.0.0.1:6381`。
-- 桌面 UI 会显示 sidecar 状态 banner:starting / running / failed / stopped;缺少 sidecar binary、端口冲突或启动超时不会静默失败。
-- Browser dev mode 保持不变:`pnpm dev` 仍通过 Vite proxy 访问 `/api → http://localhost:6381`。
-
-轻量桌面开发流程:
-
-```bash
-# 先构建 sidecar binary；Tauri dev 会自动查找 target/debug/redis-server
-cargo build -p redis-server
-
-cd web
-pnpm install
-pnpm tauri:dev
-```
-
-如果 `redis-server` 不在默认位置,可显式指定:
-
-```bash
-CS01_REDIS_SERVER_BIN=/absolute/path/to/redis-server pnpm tauri:dev
-```
-
-轻量 gate 默认不跑完整 bundle,避免在低磁盘环境反复创建 `src-tauri/target/` / bundle artifacts:
-
-```bash
-bash scripts/tauri-gate.sh
-# release-readiness 才跑完整 bundle:
-CS01_TAURI_FULL_BUILD=1 bash scripts/tauri-gate.sh
-```
-
-当前 tag-prep 状态:`31b52a1` 已通过 opt-in full Tauri `.app` bundle gate:`CS01_TAURI_FULL_BUILD=1 bash scripts/tauri-gate.sh`,产物为 `web/src-tauri/target/release/bundle/macos/CS01 mini-redis.app`。DMG、signing、notarization 不在标准 gate 内,仍是 separate future release-engineering work,本 README 不声明它们已完成。
-
 ## Architecture
 
 ```text
 ┌──────────────────────────────────────────┐
 │ SvelteKit UI (browser dev)               │
-│ M4.3 target: Tauri desktop shell         │
 │ - /_studio/dashboard                     │
 │ - /_studio/keys                          │
 │ - /_studio/pubsub (read-only)            │
@@ -169,7 +132,7 @@ CS01_TAURI_FULL_BUILD=1 bash scripts/tauri-gate.sh
      └──────────┘  └────────────────┘
 ```
 
-`rust-embed` single-binary packaging was the original ADR-0001/0008 direction, but ADR-0013 supersedes the release target for `0.1.0`: Tauri desktop + managed sidecar first; rust-embed may return in a later release.
+`rust-embed` single-binary packaging remains future work. The current release surface is the Rust server plus SvelteKit browser dashboard.
 
 ## Status
 
@@ -179,7 +142,7 @@ CS01_TAURI_FULL_BUILD=1 bash scripts/tauri-gate.sh
 - ✅ M3 Pub/Sub + AOF
 - ✅ M4.1 critical fixes: security + AOF + dispatch + Pub/Sub hardening
 - ✅ M4.2 doc sweep + release artifacts ([ADR-0012](docs/agent/adr/0012-m4-2-doc-sweep-release-artifacts.md))
-- ✅ M4.3/M4.4 Tauri desktop frontend + managed sidecar + macOS `.app` bundle gate ([ADR-0013](docs/agent/adr/0013-tauri-desktop-frontend.md)); DMG/signing/notarization remain separate future release-engineering work; rust-embed single-binary deferred
+- ✅ M4.4 scope correction: withdrawn wrong-session desktop packaging requirement ([finding](docs/agent/findings/m4-4-cross-session-tauri-contamination.md))
 
 ## Docs
 
@@ -196,6 +159,7 @@ CS01_TAURI_FULL_BUILD=1 bash scripts/tauri-gate.sh
 - F18 CTO-as-implementer drift: CTO wrote M1.3 code instead of dispatching.
 - F23-A oracle value and gap: Redis oracle caught TTL rounding, but happy-path-only oracle missed malformed-input rejection until deep-source audit.
 - F24 primitive-as-everything defense: unsupported Redis data structures are not faked with primitive containers.
+- Cross-session requirement contamination: a desktop packaging requirement from another session entered cs01 and was withdrawn in M4.4.
 
 ## License
 

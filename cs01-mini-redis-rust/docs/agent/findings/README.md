@@ -14,8 +14,8 @@
 | [m2-1-no-f23a-on-control-plane](m2-1-no-f23a-on-control-plane.md) | P4 | accepted gap | 0007 | F23-A.gap — oracle-not-applicable when domain has no reference impl | 2026-05-12 |
 | [m3-1-lagging-subscriber-disconnect](m3-1-lagging-subscriber-disconnect.md) | P4 | open (M4 candidate) | 0009 | Pub/Sub broadcast lag policy divergence from real Redis | 2026-05-12 |
 | [m3-2-aof-replay-corruption-handling](m3-2-aof-replay-corruption-handling.md) | P3 | open (M4 candidate) | 0010 | AOF warn-and-truncate semantics + INCR/DECR non-idempotency | 2026-05-12 |
-| [m4-pre-release-audit-team-aggregation](m4-pre-release-audit-team-aggregation.md) | P1 | partial-closed by M4.1/M4.2/M4.3; full Tauri bundle/signing remains M4.4 release-readiness work | 0001-0013 | F1 constitution-vs-ADR drift + F23-A happy-path-only gap + 8-agent audit leverage | 2026-05-12 |
-| [m4-3-tauri-sidecar-packaging-blocker](m4-3-tauri-sidecar-packaging-blocker.md) | P2 | accepted; package-version blocker closed in M4.4, full sidecar signing/notarization still release risk | 0013 | Tauri sidecar packaging/full-bundle gate boundary | 2026-05-13 |
+| [m4-pre-release-audit-team-aggregation](m4-pre-release-audit-team-aggregation.md) | P1 | partial-closed by M4.1/M4.2; Tauri follow-up withdrawn by M4.4 scope correction | 0001-0012 | F1 constitution-vs-ADR drift + F23-A happy-path-only gap + 8-agent audit leverage | 2026-05-12 |
+| [m4-4-cross-session-tauri-contamination](m4-4-cross-session-tauri-contamination.md) | P1 | closed by scope correction | 0013-withdrawn | F1 sediment + cross-session contamination | 2026-05-13 |
 
 ## 命名规范
 

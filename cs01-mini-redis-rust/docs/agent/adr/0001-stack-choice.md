@@ -1,6 +1,6 @@
 ---
 adr: 0001
-title: Stack choice — tokio + Axum + hashbrown + rust-embed
+title: Stack choice — tokio + Axum + hashbrown + SvelteKit browser UI
 status: accepted
 date: 2026-05-12
 case: cs01-mini-redis-rust
@@ -8,7 +8,7 @@ supersedes: none
 last_verified_commit: pending
 ---
 
-# ADR-0001: Stack choice — tokio + Axum + hashbrown + rust-embed
+# ADR-0001: Stack choice — tokio + Axum + hashbrown + SvelteKit browser UI
 
 ## Context
 
@@ -80,7 +80,7 @@ CS-01 是一个 Redis 兼容子集 + web 监控控制台。我们需要选择:
 - [ ] `Cargo.toml` workspace 声明 tokio / Axum / hashbrown / rust-embed
 - [ ] `redis-server` binary 用 tokio runtime 启动
 - [ ] `redis-storage` 用 hashbrown 当 KV
-- [ ] `redis-server` 用 rust-embed 嵌入 SvelteKit build(M4.3+ deferred; see ADR-0008 deferral and ADR-0013 Tauri sidecar direction)
+- [ ] `web/` provides the SvelteKit browser dashboard; embedding/desktop packaging remains out of scope for v0.1.0
 - [ ] 在 README "Architecture" 章节标注栈选择
 
 ## Cross-references

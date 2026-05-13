@@ -17,19 +17,20 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). CS-
 
 ### Changed
 
-- M4.3 release target is now Tauri desktop app + managed `redis-server` sidecar per ADR-0013; rust-embed single-binary packaging is deferred.
 - Pub/Sub page wording now describes the implemented read-only dashboard instead of the M2 placeholder.
 - Quick start runs without AOF so a fresh checkout does not fail on a missing `data/` directory.
+- M4.4 withdraws the accidental Tauri desktop packaging scope introduced from a wrong-session requirement; the valid cs01 release surface is the Rust server plus SvelteKit browser dashboard.
 
 ### Fixed
 
 - M4.1 hardened default bind address, parser depth, max-client handling, AOF write queue/file mode, AOF flush naming, SET trailing-token parsing, and confusing comments.
 - M4.2 closes documentation sediment around README status, bootstrap hints, ADR metadata, release artifacts, and methodology status.
+- M4.4 removes Tauri-specific code, dependencies, gate scripts, and release-readiness claims that entered cs01 from cross-session contamination.
 
 ### Release-readiness status
 
-- CTO final audit on main `31b52a1` passed doc-coverage, cargo fmt, cargo clippy, cargo test, prior integration oracle coverage (23/23 RESP, 6/6 Pub/Sub, 7/7 AOF), and the opt-in Tauri `.app` bundle gate: `CS01_TAURI_FULL_BUILD=1 bash scripts/tauri-gate.sh` produced `web/src-tauri/target/release/bundle/macos/CS01 mini-redis.app`.
-- DMG creation, signing, and notarization remain out-of-gate future release-engineering risks and are not claimed as complete for v0.1.0.
+- CTO final audit on the cs01 line passed doc-coverage, cargo fmt, cargo clippy, cargo test, prior integration oracle coverage (23/23 RESP, 6/6 Pub/Sub, 7/7 AOF), and frontend browser gates.
+- Desktop packaging, installers, signing, and notarization are not part of cs01 `0.1.0` readiness.
 
 ### Known behavioral deltas vs Redis 7
 

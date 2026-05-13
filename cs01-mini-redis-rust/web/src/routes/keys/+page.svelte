@@ -2,7 +2,6 @@
 	import { browser } from '$app/environment';
 	import { parseKeysLine } from '$lib/api/sse';
 	import type { KeyInfo } from '$lib/api/types';
-	import { apiPath } from '$lib/desktop';
 	import { formatTtl } from '$lib/format';
 
 	let keys = $state<KeyInfo[]>([]);
@@ -16,7 +15,7 @@
 
 	$effect(() => {
 		if (!browser) return;
-		const es = new EventSource(apiPath('/api/keys'));
+		const es = new EventSource('/api/keys');
 
 		es.addEventListener('keys', (event) => {
 			const parsed = parseKeysLine(event.data);

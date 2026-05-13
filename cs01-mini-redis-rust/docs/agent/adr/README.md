@@ -18,7 +18,6 @@
 | [0010](0010-m3-2-aof-persistence.md) | M3.2 — AOF append-only persistence + replay-on-restart | accepted | 2026-05-12 |
 | [0011](0011-m4-1-critical-fixes.md) | M4.1 — Critical fixes (security + constitution drift + AOF hardening + parser strictness) | accepted | 2026-05-12 |
 | [0012](0012-m4-2-doc-sweep-release-artifacts.md) | M4.2 — Doc sweep + release artifacts (LICENSE / CHANGELOG / CONTRIBUTING / SECURITY / METHODOLOGY-STATUS + sediment cleanup) | accepted | 2026-05-12 |
-| [0013](0013-tauri-desktop-frontend.md) | M4.3 — Tauri desktop frontend becomes the primary release surface | accepted | 2026-05-13 |
 
 ## 命名规范
 

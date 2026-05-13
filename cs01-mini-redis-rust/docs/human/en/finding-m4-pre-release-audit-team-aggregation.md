@@ -42,4 +42,4 @@ At Wave M3 closure, per ADSD §"Self-applied multi-agent audit" + §"LLM-simulat
 
 ## Status
 
-`P1`, partial-closed: M4.1 closed the critical code/security items, M4.2 closed the release-doc/artifact blockers, and M4.3 committed Tauri source + the lightweight gate. Remaining full Tauri bundle/signing/sidecar staging risk is tracked by `m4-3-tauri-sidecar-packaging-blocker.md` / M4.4. **ADSD upstream `case-study/` candidate**: first quantified 8-agent audit-team leverage data point (≈ 6-8× over single-CTO self-review).
+`P1`, partial-closed: M4.1 closed the critical code/security items, and M4.2 closed the release-doc/artifact blockers. The later M4.3/M4.4 Tauri follow-up was confirmed as wrong-session scope contamination, withdrawn by `m4-4-cross-session-tauri-contamination.md`, and is not live cs01 release debt. **ADSD upstream `case-study/` candidate**: first quantified 8-agent audit-team leverage data point (≈ 6-8× over single-CTO self-review).

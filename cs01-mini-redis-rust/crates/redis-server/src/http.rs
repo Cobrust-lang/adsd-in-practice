@@ -54,22 +54,9 @@ pub const KEYS_SAMPLE_LIMIT: usize = 100;
 /// rate, not a hot path.
 pub const SAMPLER_INTERVAL: Duration = Duration::from_secs(1);
 
-/// Minimal CORS policy for the Tauri desktop shell (ADR-0013 M4.3).
-///
-/// The Tauri production WebView serves bundled assets from `tauri://localhost`
-/// or Tauri's platform workaround origins (`http(s)://tauri.localhost`) while
-/// the managed sidecar exposes `/api/*` from `127.0.0.1:6381`; browser CORS
-/// therefore still applies to SSE EventSource requests.  Reflect only known
-/// development and Tauri origins so arbitrary websites cannot read the loopback
-/// control plane.
-const LOOPBACK_DESKTOP_ALLOWED_CORS_ORIGINS: &[&str] = &[
-    "http://localhost:5173",
-    "http://127.0.0.1:5173",
-    "tauri://localhost",
-    "http://tauri.localhost",
-    "https://tauri.localhost",
-];
-const LOOPBACK_DESKTOP_CORS_HEADERS: &str = "accept, cache-control";
+const BROWSER_DEV_ALLOWED_CORS_ORIGINS: &[&str] =
+    &["http://localhost:5173", "http://127.0.0.1:5173"];
+const BROWSER_DEV_CORS_HEADERS: &str = "accept, cache-control";
 
 /// Per-key payload emitted on the `/api/keys` SSE stream.  Field
 /// names are LOCKED for the M2.2 frontend (ADR-0007 §Q5).
@@ -180,14 +167,14 @@ async fn stats_sse(
     // mapper produces a plain `Event` and we wrap with `Ok` here so
     // clippy's `unnecessary_wraps` stays happy inside the mapper.
     let stream = BroadcastStream::new(rx).map(|item| Ok::<_, Infallible>(map_stats_event(&item)));
-    with_loopback_desktop_cors(&headers, Sse::new(stream).keep_alive(KeepAlive::default()))
+    with_browser_dev_cors(&headers, Sse::new(stream).keep_alive(KeepAlive::default()))
 }
 
 /// `GET /api/keys` — SSE stream of `event: keys` frames (JSON array).
 async fn keys_sse(headers: HeaderMap, State(state): State<AppState>) -> Response<axum::body::Body> {
     let rx = state.keys_tx.subscribe();
     let stream = BroadcastStream::new(rx).map(|item| Ok::<_, Infallible>(map_keys_event(&item)));
-    with_loopback_desktop_cors(&headers, Sse::new(stream).keep_alive(KeepAlive::default()))
+    with_browser_dev_cors(&headers, Sse::new(stream).keep_alive(KeepAlive::default()))
 }
 
 /// `GET /api/pubsub` — SSE stream of `event: pubsub` frames (ADR-0009).
@@ -198,10 +185,10 @@ async fn pubsub_sse(
 ) -> Response<axum::body::Body> {
     let rx = state.pubsub_tx.subscribe();
     let stream = BroadcastStream::new(rx).map(|item| Ok::<_, Infallible>(map_pubsub_event(&item)));
-    with_loopback_desktop_cors(&headers, Sse::new(stream).keep_alive(KeepAlive::default()))
+    with_browser_dev_cors(&headers, Sse::new(stream).keep_alive(KeepAlive::default()))
 }
 
-fn with_loopback_desktop_cors(
+fn with_browser_dev_cors(
     request_headers: &HeaderMap,
     response: impl IntoResponse,
 ) -> Response<axum::body::Body> {
@@ -209,7 +196,7 @@ fn with_loopback_desktop_cors(
     if let Some(origin) = request_headers
         .get(ORIGIN)
         .and_then(|origin| origin.to_str().ok())
-        .filter(|origin| LOOPBACK_DESKTOP_ALLOWED_CORS_ORIGINS.contains(origin))
+        .filter(|origin| BROWSER_DEV_ALLOWED_CORS_ORIGINS.contains(origin))
     {
         response.headers_mut().insert(
             ACCESS_CONTROL_ALLOW_ORIGIN,
@@ -217,7 +204,7 @@ fn with_loopback_desktop_cors(
         );
         response.headers_mut().insert(
             ACCESS_CONTROL_ALLOW_HEADERS,
-            HeaderValue::from_static(LOOPBACK_DESKTOP_CORS_HEADERS),
+            HeaderValue::from_static(BROWSER_DEV_CORS_HEADERS),
         );
     }
     response
@@ -340,13 +327,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stats_sse_reflects_allowed_loopback_cors_origin() {
-        let response = stats_sse_response_with_origin(Some("http://tauri.localhost")).await;
+    async fn stats_sse_reflects_allowed_browser_dev_cors_origin() {
+        let response = stats_sse_response_with_origin(Some("http://localhost:5173")).await;
 
         assert_eq!(response.status(), axum::http::StatusCode::OK);
         assert_eq!(
             response.headers().get(ACCESS_CONTROL_ALLOW_ORIGIN),
-            Some(&HeaderValue::from_static("http://tauri.localhost"))
+            Some(&HeaderValue::from_static("http://localhost:5173"))
         );
     }
 

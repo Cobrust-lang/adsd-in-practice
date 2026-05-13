@@ -6,13 +6,6 @@ target/
 node_modules/
 web/build/
 web/.svelte-kit/
-web/src-tauri/target/
-web/src-tauri/gen/
-web/src-tauri/.tauri/
-web/src-tauri/icons/icon.icns
-web/src-tauri/icons/icon.ico
-**/src-tauri/target/
-**/src-tauri/.tauri/
 
 # Editor / OS
 .DS_Store

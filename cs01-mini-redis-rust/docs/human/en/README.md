@@ -2,7 +2,7 @@
 
 ## What this is
 
-A Rust-from-scratch Redis-compatible subset with a SvelteKit monitoring console. Starting in M4.3, the primary frontend release surface moves to a Tauri desktop app with a managed `redis-server` sidecar. The goal is to validate whether ADSD still works in the network-service + persistence + frontend-release domain.
+A Rust-from-scratch Redis-compatible subset with a SvelteKit browser monitoring console. The goal is to validate whether ADSD still works in the network-service + persistence + frontend domain.
 
 ## Quick start
 
@@ -12,7 +12,7 @@ bash scripts/bootstrap.sh
 cargo run -p redis-server -- --port 6380
 ```
 
-Monitor UI: M4.3 target is a Tauri desktop app; browser dev mode uses `cd web && pnpm dev` and opens `http://localhost:5173`.
+Monitor UI: browser dev mode uses `cd web && pnpm dev` and opens `http://localhost:5173`.
 
 AOF persistence requires an explicit directory:
 
@@ -38,7 +38,7 @@ We run round-trip tests against `redis:7-alpine` (docker); see `tests/oracle.sh`
 
 See full ADRs in [`docs/agent/adr/`](../../agent/adr/). English abstracts:
 
-- [ADR-0001 Stack choice](./adr-0001-stack-choice.md): tokio + Axum + hashbrown; rust-embed deferred, see ADR-0013
+- [ADR-0001 Stack choice](./adr-0001-stack-choice.md): tokio + Axum + hashbrown + SvelteKit/browser UI
 - [ADR-0002 RESP framing](./adr-0002-resp-framing.md): RESP parse / serialize strategy
 - [ADR-0003 Storage layout](./adr-0003-storage-layout.md): in-memory storage layout
 - [ADR-0004 Command routing](./adr-0004-command-routing.md): command routing
@@ -50,7 +50,6 @@ See full ADRs in [`docs/agent/adr/`](../../agent/adr/). English abstracts:
 - [ADR-0010 AOF persistence](./adr-0010-m3-2-aof-persistence.md): append-only persistence
 - [ADR-0011 M4.1 critical fixes](./adr-0011-m4-1-critical-fixes.md): pre-release critical fixes
 - [ADR-0012 M4.2 doc sweep](./adr-0012-m4-2-doc-sweep-release-artifacts.md): release artifacts + sediment cleanup
-- [ADR-0013 Tauri desktop frontend](./adr-0013-tauri-desktop-frontend.md): M4.3 frontend release surface moves to Tauri desktop app + managed sidecar
 
 ## Finding abstracts
 
@@ -61,10 +60,11 @@ See full ADRs in [`docs/agent/adr/`](../../agent/adr/). English abstracts:
 - [M3.1 lagging subscriber disconnect](./finding-m3-1-lagging-subscriber-disconnect.md)
 - [M3.2 AOF replay corruption handling](./finding-m3-2-aof-replay-corruption-handling.md)
 - [M4 pre-release audit aggregation](./finding-m4-pre-release-audit-team-aggregation.md)
+- [M4.4 cross-session Tauri contamination](./finding-m4-4-cross-session-tauri-contamination.md)
 
 ## Status
 
-M1 backend MVP; M2 frontend/control-plane MVP; M3 Pub/Sub + AOF; M4.1 critical fixes; M4.2 doc sweep + release artifacts; and M4.3 Tauri desktop frontend source + managed sidecar lightweight gate are shipped. Full bundle/signing verification remains release-readiness work. rust-embed single-binary packaging is deferred and is no longer a v0.1.0 blocker.
+M1 backend MVP, M2 frontend/control-plane MVP, M3 Pub/Sub + AOF, M4.1 critical fixes, and M4.2 doc sweep + release artifacts are shipped. Tauri desktop/sidecar packaging is not a requirement for this project; earlier Tauri references came from a cross-session mix-up and are withdrawn.
 
 ## License
 

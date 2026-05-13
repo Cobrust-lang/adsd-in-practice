@@ -24,8 +24,8 @@ need cargo
 need rustc
 echo "  ok cargo $(cargo --version | awk '{print $2}'), rustc $(rustc --version | awk '{print $2}')"
 
-# 2. 前端工具软检查(M2.2+/M4.3)
-warn_missing node "needed for web/ frontend gate and Tauri target"
+# 2. 前端工具软检查(M2.2+)
+warn_missing node "needed for web/ frontend gate"
 warn_missing pnpm "needed for web/ frontend gate"
 
 # 3. 拉依赖
